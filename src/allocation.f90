@@ -184,6 +184,7 @@ module alloc
       real(r_8) :: negative_one
       real(r_8) :: aux_on, aux_sop, aux_op
 
+  
 
       ! initialize ALL outputs
       storage_out_alloc            = (/0.0D0, 0.0D0, 0.0D0/)
@@ -924,6 +925,7 @@ module alloc
       scf2 = scf2 * 1.0D-3
       if(awood .gt. 0.0D0) then
          sca2 = sca2 * 1.0D-3
+         print*, 'sca2 em kg', sca2
       else
          sca2 = 0.0D0
       endif

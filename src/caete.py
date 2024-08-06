@@ -659,9 +659,9 @@ class grd:
         self.soil_texture = hsoil[2][self.y, self.x].copy()
 
         # Biomass
-        self.vp_cleaf = np.zeros(shape=(npls,), order='F') + 1.0
-        self.vp_croot = np.zeros(shape=(npls,), order='F') + 1.0
-        self.vp_cwood = np.zeros(shape=(npls,), order='F') + 0.1
+        self.vp_cleaf = np.zeros(shape=(npls,), order='F') + 0.1 #+ 1.0
+        self.vp_croot = np.zeros(shape=(npls,), order='F') + 0.1
+        self.vp_cwood = np.zeros(shape=(npls,), order='F') + 1.0
         self.vp_cwood[pls_table[6,:] == 0.0] = 0.0
         # self.vp_cleaf, self.vp_croot, self.vp_cwood = m.spinup2(
         #     1.0, self.pls_table)
@@ -870,6 +870,7 @@ class grd:
                 self._allocate_output_nosave(steps.size)
                 self.save = False
             for step in range(steps.size):
+                # print('STEP', step)
                 if fix_co2_p:
                     pass
                 else:
@@ -958,13 +959,13 @@ class grd:
                         f"Gridcell {self.xyname} has no living Plant Life Strategies - Re-populating")
                     # REPOPULATE]
                     # UPDATE vegetation pools
-                    self.vp_cleaf = np.zeros(shape=(self.vp_lsid.size,)) + 1.0
+                    self.vp_cleaf = np.zeros(shape=(self.vp_lsid.size,)) + 0.1
                     self.vp_cwood = np.zeros(shape=(self.vp_lsid.size,))
-                    self.vp_croot = np.zeros(shape=(self.vp_lsid.size,)) + 1.0
+                    self.vp_croot = np.zeros(shape=(self.vp_lsid.size,)) + 0.1
                     awood = self.pls_table[6, :]
                     for i0, i in enumerate(self.vp_lsid):
                         if awood[i] > 0.0:
-                            self.vp_cwood[i0] = 0.1
+                            self.vp_cwood[i0] = 1.0
 
                     self.vp_dcl = np.zeros(shape=(self.vp_lsid.size,))
                     self.vp_dca = np.zeros(shape=(self.vp_lsid.size,))

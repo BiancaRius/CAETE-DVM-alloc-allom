@@ -42,6 +42,7 @@ contains
 
       use photo, only: pft_area_frac, sto_resp
       use water, only: evpot2, penman, available_energy, runoff
+      use alloc2
 
       !     ----------------------------INPUTS-------------------------------
       real(r_8),dimension(ntraits,npls),intent(in) :: dt
@@ -117,7 +118,7 @@ contains
       real(r_4),parameter :: tsnow = -1.0
       real(r_4),parameter :: tice  = -2.5
 
-      real(r_8),dimension(npls) :: cl1_pft, cf1_pft, ca1_pft
+      real(r_8), dimension(npls) :: cl1_pft, cf1_pft, ca1_pft, cs1_pft, ch1_pft
       real(r_4) :: soil_temp
       real(r_4) :: emax
       real(r_8) :: w                               !Daily soil moisture storage (mm)
@@ -179,9 +180,15 @@ contains
       do i = 1,npls
          awood_aux(i) = dt(7,i)
          pdia_aux(i) = dt(17,i)
+
          cl1_pft(i) = cl1_in(i)
          ca1_pft(i) = ca1_in(i)
          cf1_pft(i) = cf1_in(i)
+
+         !provisory (sapwood and heartwood compartment)
+         cs1_pft(i) = 0.1*ca1_pft(i)
+         ch1_pft(i) = 0.9*ca1_pft(i)
+
          dleaf(i) = dleaf_in(i)
          dwood(i) = dwood_in(i)
          droot(i) = droot_in(i)
@@ -201,6 +208,7 @@ contains
       &                  ocpavg, ocp_wood, run, ocp_mm)
 
       nlen = sum(run)    ! New length for the arrays in the main loop
+      print*, 'NLEN',  nlen
       allocate(lp(nlen))
       allocate(ocp_coeffs(nlen))
       allocate(idx_grasses(nlen))
@@ -289,6 +297,7 @@ contains
       !$OMP DEFAULT(SHARED) &
       !$OMP PRIVATE(p, ri, carbon_in_storage, testcdef, sr, dt1, mr_sto, growth_stoc, ar_aux)
       do p = 1,nlen
+         print*, 'p', p
 
          carbon_in_storage = 0.0D0
          testcdef = 0.0D0
@@ -304,6 +313,7 @@ contains
 
          evap(p) = penman(p0,temp,rh,available_energy(temp),rc2(p)) !Actual evapotranspiration (evap, mm/day)
 
+         
          ! Check if the carbon deficit can be compensated by stored carbon
          carbon_in_storage = sto_budg(1, ri)
          storage_out_bdgt(1, p) = carbon_in_storage
@@ -333,7 +343,11 @@ contains
             &, cf1_pft(ri),storage_out_bdgt(:,p),day_storage(:,p),cl2(p),ca2(p)&
             &, cf2(p),litter_l(p),cwd(p), litter_fr(p),nupt(:,p),pupt(:,p)&
             &, lit_nut_content(:,p), limitation_status(:,p), npp2pay(p), uptk_strat(:, p), ar_aux)
-
+         
+         !testing variables entering in allocation2 subroutine
+         call allocation2(dt1, nppa(p), cl1_pft(ri), ca1_pft(ri)&
+            &, cf1_pft(ri), cs1_pft(ri), ch1_pft(ri))
+          
          ! Estimate growth of storage C pool
          ar_fix_hr(p) = ar_aux
          growth_stoc = max( 0.0D0, (day_storage(1,p) - storage_out_bdgt(1,p)))
