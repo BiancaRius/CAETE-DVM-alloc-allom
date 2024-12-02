@@ -118,7 +118,6 @@ contains
 
       real(r_8) :: f4sun, f1in
       real(r_8) :: f4shade
-
       f1in = f1
       f4sun = f_four(1,cleaf,sla)
       f4shade = f_four(2,cleaf,sla)
@@ -140,7 +139,7 @@ contains
       real(r_8),intent(in) :: sla   !m2 gC-1
       real(r_8) :: lai
 
-
+      
       lai  = cleaf * 1.0D3 * sla  ! Converts cleaf from (KgC m-2) to (gCm-2)
       if(lai .lt. 0.0D0) lai = 0.0D0
 
@@ -166,6 +165,7 @@ contains
       ! tl0 = ((365.242D0 / 12.0D0) - 10.45) * (2.718281828459045D0 ** (2.0D0*n_tau_leaf))
 
       sla = sla_reich(tau_leaf) * 0.0001 !(3D-2 * (365.2420D0 / tl0) ** (-0.460D0))
+     
 
    end function spec_leaf_area
 
@@ -213,7 +213,7 @@ contains
 
       lai = leaf_area_index(cleaf, sla)
 
-      sunlai = (1.0D0-(dexp(-p26*lai)))/p26
+      sunlai = (1.0D0-(exp(-p26*lai)))/p26
       shadelai = lai - sunlai
 
       lai_ss = sunlai
@@ -232,13 +232,13 @@ contains
       !------------------------------------------------------------------------
       if(fs .eq. 1) then
          ! f4sun
-         lai_ss = (1.0-(dexp(-p26*sunlai)))/p26 !sun decl 90 degrees
+         lai_ss = (1.0-(exp(-p26*sunlai)))/p26 !sun decl 90 degrees
          return
       endif
 
       if(fs .eq. 2) then
          !f4shade
-         lai_ss = (1.0-(dexp(-p27*shadelai)))/p27 !sun decl ~20 degrees
+         lai_ss = (1.0-(exp(-p27*shadelai)))/p27 !sun decl ~20 degrees
          return
       endif
    end function f_four
@@ -640,6 +640,8 @@ contains
       ! real(r_8) :: nmgg, pmgg
       ! real(r_8) :: coeffa, coeffb
 
+
+
       nbio2 = nbio !nrubisco(leaf_turnover, nbio)
       pbio2 = pbio !nrubisco(leaf_turnover, pbio)
 
@@ -664,12 +666,16 @@ contains
 
       ! vm_nutri = coeffa + (coeffb * dlog10(nbio2))
 
-      vm = vcmax_a(nbio2, pbio2, spec_leaf_area(leaf_turnover)) ! 10**vm_nutri * 1D-6  ! 
+      !Vm considering nutrients role:
+      !vm = vcmax_a(nbio2, pbio2, spec_leaf_area(leaf_turnover)) ! 10**vm_nutri * 1D-6  ! 
+      
+      !Vm using the value adopted in CPTECPVM2
+      vm = vcmax
       if(vm + 1 .eq. vm) vm = 1.0D-5 ! If Vc max is inf give it a low value
       if(vm .gt. p25) vm = p25
 
       ! Rubisco Carboxilation Rate - temperature dependence
-      vm_in = (vm*2.0D0**(0.1D0*(temp-25.0D0)))/(1.0D0+dexp(0.3D0*(temp-36.0)))
+      vm_in = (vm*2.0D0**(0.1D0*(temp-25.0D0)))/(1.0D0+exp(0.3D0*(temp-36.0)))
       if(vm_in + 1 .eq. vm_in) vm_in = p25 - 5.0D-5
       if(vm_in .gt. p25) vm_in = p25
 
@@ -1004,17 +1010,17 @@ contains
   !===================================================================
   !===================================================================
 
-   function m_resp(temp, ts,cl1_mr,cf1_mr,ca1_mr,&
+   function m_resp(temp, ts,cl1_mr,cf1_mr,cs1_mr,&
         & n2cl,n2cw,n2cf,aawood_mr) result(rm)
 
       use types, only: r_4,r_8
-      use global_par, only: sapwood
+      use global_par, only: sapwood, ncf, ncl, ncs
       !implicit none
 
       real(r_4), intent(in) :: temp, ts
       real(r_8), intent(in) :: cl1_mr
       real(r_8), intent(in) :: cf1_mr
-      real(r_8), intent(in) :: ca1_mr
+      real(r_8), intent(in) :: cs1_mr
       real(r_8), intent(in) :: n2cl
       real(r_8), intent(in) :: n2cw
       real(r_8), intent(in) :: n2cf
@@ -1023,23 +1029,39 @@ contains
 
       real(r_8) :: csa, rm64, rml64
       real(r_8) :: rmf64, rms64
-      real(r_8), parameter :: a1 = 25.0D0, a2 = 0.04D0
+      real(r_8) :: t_resp !Temperature influence on respiration
+      ! real(r_8), parameter :: a1 = 25.0D0, a2 = 0.04D0
+      ! real(r_8), parameter :: a1 = 15.0D0, a2 = 0.04D0
+      real(r_8), parameter :: a1 = 15.0D0, a2 = 0.03D0
       !   Autothrophic respiration
       !   ========================
       !   Maintenance respiration (kgC/m2/yr) (based in Ryan 1991)
+      !ATTENTION: . The “seed” and storage carbon pools are not subject to maintenance res10 piration within the model, however, they do decay at a constant rate as described in
+!Sect. A6.
 
+      t_resp = (3.22 - (0.046 * temp))**((temp - 20)/10)
       ! sapwood carbon content (kgC/m2). X% of woody tissues (Pavlick, 2013)
       ! only for woody PLSs
       if(aawood_mr .gt. 0.0) then
-         csa = sapwood * ca1_mr
-         rms64 = ((n2cw * (csa * 1D3)) * a1 * dexp(a2 * temp))
+         csa = cs1_mr
+         ! rms64 = ((n2cw * (csa * 1D3)) * a1 * exp(a2 * temp))
+         rms64 = ((ncs * (csa * 1D3)) * a1 * exp(a2 * temp))
+         
       else
          rms64 = 0.0
       endif
+      
+      rml64 = ((ncl*(cl1_mr*1D3))*a1*exp(a2 * temp))
+            ! rml64 = ((n2cl * (cl1_mr * 1D3)) * a1 * exp(a2 * temp))
 
-      rml64 = ((n2cl * (cl1_mr * 1D3)) * a1 * dexp(a2 * temp))
+      ! print*, 'rml64 previous', rml64
 
-      rmf64 = ((n2cf * (cf1_mr * 1D3)) * a1 * dexp(a2 * ts))
+      ! rml64 = 0.3*((cl1_mr*1D3)/(1.0/29.0))*1.6180
+      ! print*, 'rml64 lpj', rml64
+      
+      rmf64 = ((ncf * (cf1_mr * 1D3)) * a1 * exp(a2 * ts))
+! 
+      ! rmf64 = ((n2cf * (cf1_mr * 1D3)) * a1 * exp(a2 * ts))
 
       rm64 = (rml64 + rmf64 + rms64) * 1D-3
 
@@ -1084,7 +1106,7 @@ contains
       ston = ston/stoc
     endif
 
-    rm = ((ston * stoc) * a1 * dexp(a2 * temp))
+    rm = ((ston * stoc) * a1 * exp(a2 * temp))
 
     if (rm .lt. 0) then
        rm = 0.0
@@ -1123,11 +1145,11 @@ contains
       if(a2 .le. 0.0D0) a2 = 0.0D0
       if(a3 .le. 0.0D0) a3 = 0.0D0
 
-      rgl64 = 1.25D0 * a1
-      rgf64 = 1.25D0 * a2
+      rgl64 = 0.25D0 * a1
+      rgf64 = 0.25D0 * a2
 
       if(aawood_rg .gt. 0.0D0) then
-         rgs64 = 1.25D0 * a3
+         rgs64 = 0.25D0 * a3
       else
          rgs64 = 0.0D0
       endif
@@ -1221,6 +1243,7 @@ contains
 
       ! check for nan in cleaf cawood cfroot
       do p = 1,npft
+         
          if(isnan(cleaf(p))) cleaf(p) = 0.0D0
          if(isnan(cfroot(p))) cfroot(p) = 0.0D0
          if(isnan(cawood(p))) cawood(p) = 0.0D0
@@ -1266,6 +1289,12 @@ contains
             run_pls(p) = 0
          enddo
       endif
+
+      ! do p = 1,npft
+      !    if(p.eq.1000) then
+      !       print*, 'ocp coefficient', ocp_coeffs(p), p
+      !    endif
+      ! enddo
 
       !     gridcell pft ligth limitation by wood content
       five_percent = nint(real(npft) * 0.05)

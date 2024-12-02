@@ -94,7 +94,7 @@ CAETE-DVM/outputs/run_name/gridcellYX$ python
 >>> # edit the functions apply_fun() in model_driver.py script
 >>> with open("spin05.pkz", 'rb') as fh:
 >>>    dt = joblib.load(fh)
->>> dt.keys() # list the available keys for the ouputs
+>>> dt.() # list the available keys for the ouputs
 >>> # PLot some variables
 >>> import matplotlib.pyplot as plt
 >>> plt.plot(dt['npp'])
