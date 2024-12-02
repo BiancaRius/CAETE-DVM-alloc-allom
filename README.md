@@ -1,3 +1,7 @@
+This branch was created in 02/12/2024 to make an organization on the files to send to Joao as he is going to deal with the several CAETE versions.
+For the PhD code you can refer to the branch alloc_allom2
+
+
 
 # CAETÊ
 
