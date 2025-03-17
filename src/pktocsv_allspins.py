@@ -50,8 +50,10 @@ def pkz2csv(file, path, grd_name, run_name, spin_id, date_range, grd_acro) -> pd
         print('')
         # print(f'len area_TS {len(area_TS)} len idxT1 {len(idxT1)}')
 
+       
     # Verifique se o comprimento de area_TS é consistente com o índice idxT1
         assert len(area_TS) == len(idxT1), "Length mismatch between area_TS and idxT1"
+        
     
         area_TS = pd.Series(area_TS, index=idxT1)
 
