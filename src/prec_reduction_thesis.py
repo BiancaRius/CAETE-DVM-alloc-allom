@@ -36,6 +36,7 @@ with open(run_path, 'rb') as fh:
     # Load data from the file using the joblib library
     init_conditions = joblib.load(fh)
     #init_conditions contais all the attributes and methods of caete.grd
+    
 all_attributes_and_methods = dir(init_conditions)
 
 
