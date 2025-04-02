@@ -30,8 +30,8 @@ outputs/
 
 
 Initial conditions for CAETE  
-!/home/amazonfaceme/biancarius/CAETE-DVM-alloc-allom/outputs/MAN/state_start/MAN_save_spin_2/CAETE_STATE_END_MAN_save_spin_2_.pkz
-!/home/amazonfaceme/biancarius/CAETE-DVM-alloc-allom/outputs/MAN/state_start/MAN_save_spin_2/CAETE_STATE_START_MAN_save_spin_2_.pkz
+!/outputs/MAN/state_start/MAN_save_spin_2/CAETE_STATE_END_MAN_save_spin_2_.pkz
+!/MAN/state_start/MAN_save_spin_2/CAETE_STATE_START_MAN_save_spin_2_.pkz
 
 Essas regras dizem para ignorar todos os arquivos dentro do diretório `outputs`, mas fazer exceções para os arquivos com extensão `.py` e `.csv`. Certifique-se de que este arquivo `.gitignore` esteja na raiz do seu repositório Git.
 outputs_server/*
