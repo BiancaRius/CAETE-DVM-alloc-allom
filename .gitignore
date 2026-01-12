@@ -31,7 +31,7 @@ outputs/
 !MAN/experiments/30perc_reduction/MAN_timeseries_allfreq_30perc_subplots.png
 
 
-
+!scripts/analysis_2025/bfast/bfast_h_sensitivity/bfast_plots/*
 
 
 Essas regras dizem para ignorar todos os arquivos dentro do diretório `outputs`, mas fazer exceções para os arquivos com extensão `.py` e `.csv`. Certifique-se de que este arquivo `.gitignore` esteja na raiz do seu repositório Git.
