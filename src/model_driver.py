@@ -272,17 +272,17 @@ if sombrero:
         rbrk_index = 1
 
         # READ the PLS table employed in the base run
-        from parameters import pls_path, ATTR_FILENAME
-        if pls_path.exists():
-            from caete_utils import read_pls_table
-            print('')
-            print("Using PLS TABLE from BASE_RUN : baserun_6000pls_attrs_table/pls_attrs-6000.csv")
-            print('')
-            os.makedirs(dump_folder, exist_ok=True)
-            pls_table = read_pls_table(out=Path(os.path.join(dump_folder, ATTR_FILENAME)))
-        else:
-            print(f"WARNING: Creating a new PLS table for a historical simulated ({outf}) run ")
-            pls_table = pls.table_gen(npls, dump_folder)
+        # from parameters import pls_path, ATTR_FILENAME
+        # if pls_path.exists():
+        #     from caete_utils import read_pls_table
+        #     print('')
+        #     print("Using PLS TABLE from BASE_RUN : baserun_6000pls_attrs_table/pls_attrs-6000.csv")
+        #     print('')
+        #     os.makedirs(dump_folder, exist_ok=True)
+        #     pls_table = read_pls_table(out=Path(os.path.join(dump_folder, ATTR_FILENAME)))
+        # else:
+        print(f"WARNING: Creating a new PLS table for a historical simulated ({outf}) run ")
+        pls_table = pls.table_gen(npls, dump_folder)
 
     with open("stime.txt", 'w') as fh:
         fh.writelines([f"{stime['units']}\n",
@@ -325,17 +325,17 @@ else:
     
     # FUNCTIONAL TRAITS DATA
     # pls_table = pls.table_gen(npls, dump_folder)
-    from parameters import pls_path, ATTR_FILENAME
-    if pls_path.exists():
-        from caete_utils import read_pls_table
-        print('')
-        print("Using PLS TABLE from BASE_RUN : baserun_6000pls_attrs_table/pls_attrs-6000.csv")
-        print('')
-        os.makedirs(dump_folder, exist_ok=True)
-        pls_table = read_pls_table(out=Path(os.path.join(dump_folder, ATTR_FILENAME)))
-    else:
-        print(f"WARNING: Creating a new PLS table for a historical simulated ({outf}) run ")
-        pls_table = pls.table_gen(npls, dump_folder)
+    # from parameters import pls_path, ATTR_FILENAME
+    # if pls_path.exists():
+    #     from caete_utils import read_pls_table
+    #     print('')
+    #     print("Using PLS TABLE from BASE_RUN : baserun_6000pls_attrs_table/pls_attrs-6000.csv")
+    #     print('')
+    #     os.makedirs(dump_folder, exist_ok=True)
+    #     pls_table = read_pls_table(out=Path(os.path.join(dump_folder, ATTR_FILENAME)))
+    # else:
+    print(f"WARNING: Creating a new PLS table for a historical simulated ({outf}) run ")
+    pls_table = pls.table_gen(npls, dump_folder)
 
 
 # # Create the gridcell objects
