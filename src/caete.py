@@ -1105,7 +1105,7 @@ class grd:
    
         # Catch climatic input and make conversions
         temp = self.tas[lb: hb + 1] - 273.15  # ! K to °C
-        prec = self.pr[lb: hb + 1] * 86400  # kg m-2 s-1 to  mm/day
+        prec = self.pr[lb: hb + 1] * 86400 # kg m-2 s-1 to  mm/day
         # transforamando de Pascal pra mbar (hPa)
         p_atm = self.ps[lb: hb + 1] * 0.01
         # W m-2 to mol m-2 s-1 ! 0.5 converts RSDS to PAR
