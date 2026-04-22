@@ -38,7 +38,7 @@ while True:
 
     if server == 'y':
         # Set the main_path accordingly for server
-        main_path = f'/home/amazonfaceme/biancarius/CAETE-DVM-alloc-allom/outputs/'
+        main_path = f'/home/amazonfaceme/biancarius/CAETE-DVM-alloc2-allom2/outputs/'
         break
     elif server == 'n':
         # Set the main_path accordingly for local machine
@@ -74,7 +74,7 @@ while True:
 #     'CAX_30prec_7y']
 
 run_names = [
-   'test_marcela']
+   'sombrero']
     
 
 
