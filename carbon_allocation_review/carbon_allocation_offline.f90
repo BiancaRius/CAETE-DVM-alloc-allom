@@ -1016,13 +1016,16 @@ module carbon_allocation_offline_kernel
             result%stem_diameter_new = 0.0_real64
          end if
 
+         ! Compute carbon balance including sapwood-to-heartwood transfer.
+         !
+         ! Note: In abnormal allocation, delta_sapwood can be negative. This does not mean
+         ! carbon was lost from the plant. The removed sapwood carbon is transferred
+         ! to heartwood. Therefore, total plant carbon balance must include the
+         ! heartwood increment.
          result%carbon_balance_error = c_available - &
-            (result%delta_leaf + result%delta_root + result%delta_sapwood)
+            (result%delta_leaf + result%delta_root + result%delta_sapwood + &
+            (result%heartwood_mass_new - state%heartwood_mass))
 
-         ! Note: in abnormal allocation, carbon balance over living tissues alone
-         ! can look different because negative sapwood is converted to heartwood.
-         ! For a full model integration, track litter and sapwood-to-heartwood
-         ! fluxes explicitly outside this minimal kernel.
 
          result%leaf_root_residual = result%leaf_mass_new - &
             params%leaf_to_root_ratio * result%root_mass_new

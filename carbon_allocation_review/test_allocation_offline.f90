@@ -47,9 +47,10 @@ program test_allocation
   ! Initial plant height from pipe model
   ! Compute initial sapwood area from the pipe model ( to calculate initial height)
   ! sapwood_area_initial = state%leaf_mass * params%sla / params%latosa
-  ! Compute initial plant height from the pipe model.
+  !Compute initial plant height from the pipe model.
   ! state%height = state%sapwood_mass / &
   !   (params%wood_density * sapwood_area_initial)
+  !   print *, "Initial height calculated from total stem carbon = ", state%height
 
   !ALTERNATIVE: Initial height from total stem carbon
   stem_carbon_total_initial = state%sapwood_mass + state%heartwood_mass
@@ -64,11 +65,12 @@ program test_allocation
 
   state%height = height_power_initial**(1.0_real64 / height_power_exponent)
   print *, "Initial height calculated from total stem carbon = ", state%height
+  !---------------------------------------------------------------------------
 
-
-
-  ! Carbon available for allocation over this test period.
+  ! Carbon available for allocation over this test period (~ net primary production).
+  ! c_available = 5.0_real64
   c_available = 0.5_real64
+
 
   call allocate(state, params, c_available, result)
 
