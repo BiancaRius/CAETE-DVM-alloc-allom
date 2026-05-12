@@ -1033,7 +1033,9 @@ module carbon_allocation_offline_kernel
          result%allocation_residual_final = allocation_residual(state, params, c_available, result%delta_leaf)
 
          result%message = "Abnormal allocation used. Track litter and sapwood-to-heartwood fluxes explicitly in integration."
-
+         ! The allocation residual is not applicable to abnormal allocation.
+         result%allocation_residual_final = 0.0_real64
+         
       end subroutine abnormal_allocation
 
 end module carbon_allocation_offline_kernel
