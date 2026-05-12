@@ -547,136 +547,153 @@ module carbon_allocation_offline_kernel
    !==========================================================================
       subroutine allocate(state, params, c_available, result)
 
-        type(PlantCarbonState),    intent(in)  :: state
-        type(Parameters), intent(in)  :: params
-        real(real64),              intent(in)  :: c_available
-        type(AllocationOutput),    intent(out) :: result
+         type(PlantCarbonState),    intent(in)  :: state
+         type(Parameters), intent(in)  :: params
+         real(real64),              intent(in)  :: c_available
+         type(AllocationOutput),    intent(out) :: result
 
-        real(real64) :: leaf_required
-        real(real64) :: delta_leaf_min
-        real(real64) :: delta_root_min
-        real(real64) :: lower
-        real(real64) :: upper
-        real(real64) :: f_lower
-        real(real64) :: f_upper
-        real(real64) :: left
-        real(real64) :: right
-        real(real64) :: mid
-        real(real64) :: f_left
-        real(real64) :: f_mid
-        real(real64) :: scan_step
-        real(real64) :: previous_x
-        real(real64) :: previous_f
-        real(real64) :: scan_interval_width
-        real(real64) :: n_scan_segments_real
-        logical      :: bracket_found
-        integer      :: i
+         real(real64) :: leaf_required
+         real(real64) :: delta_leaf_min
+         real(real64) :: delta_root_min
+         real(real64) :: lower
+         real(real64) :: upper
+         real(real64) :: f_lower
+         real(real64) :: f_upper
+         real(real64) :: left
+         real(real64) :: right
+         real(real64) :: mid
+         real(real64) :: f_left
+         real(real64) :: f_mid
+         real(real64) :: scan_step
+         real(real64) :: previous_x
+         real(real64) :: previous_f
+         real(real64) :: scan_interval_width
+         real(real64) :: n_scan_segments_real
+         logical      :: bracket_found
+         integer      :: i
 
-        ! Initialize output.
-        result = AllocationOutput()
+         ! Initialize output.
+         result = AllocationOutput()
 
-        ! Basic checks.
-        if (params%sla <= 0.0_real64 .or. params%latosa <= 0.0_real64 .or. &
-            params%wood_density <= 0.0_real64 .or. params%leaf_to_root_ratio <= 0.0_real64 .or. &
-            params%allom2 <= 0.0_real64 .or. params%allom3 <= 0.0_real64) then
-            result%message = "Invalid parameter value. All core allometric parameters must be positive."
-            return
-        end if
+         ! Basic checks.
+         if (params%sla <= 0.0_real64 .or. params%latosa <= 0.0_real64 .or. &
+               params%wood_density <= 0.0_real64 .or. params%leaf_to_root_ratio <= 0.0_real64 .or. &
+               params%allom2 <= 0.0_real64 .or. params%allom3 <= 0.0_real64) then
+               result%message = "Invalid parameter value. All core allometric parameters must be positive."
+               return
+         end if
 
-        if (state%height <= 0.0_real64) then
-            result%message = "Invalid initial state. Height must be positive for woody    allocation."
-            return
-        end if
+         if (state%height <= 0.0_real64) then
+               result%message = "Invalid initial state. Height must be positive for woody    allocation."
+               return
+         end if
 
          !-----------------------------------------------------------------------
          ! Step 1: compute minimum leaf and root increments needed for normal
          ! allocation.
          !-----------------------------------------------------------------------
-        leaf_required  = leaf_requirement(state, params)
-        delta_leaf_min = leaf_required - state%leaf_mass
+         leaf_required  = leaf_requirement(state, params)
+         delta_leaf_min = leaf_required - state%leaf_mass
 
-         ! Root mass needed to support leaf_required under functional balance:
-         !     root_required = leaf_required / leaf_to_root_ratio
-         !
-         ! Minimum root increment:
-         !     delta_root_min = root_required - root_old
-        delta_root_min = leaf_required / params%leaf_to_root_ratio - state%root_mass
-
+            ! Root mass needed to support leaf_required under functional balance:
+            !     root_required = leaf_required / leaf_to_root_ratio
+            !
+            ! Minimum root increment:
+            !     delta_root_min = root_required - root_old
+         delta_root_min = leaf_required / params%leaf_to_root_ratio - state%root_mass
+            
          !-----------------------------------------------------------------------
-         ! Step 2: decide whether the normal-allocation problem is feasible.
-         !-----------------------------------------------------------------------
-         ! Normal allocation assumes positive allocation to all living pools:
-         !     delta_leaf    > 0
-         !     delta_root    > 0
-         !     delta_sapwood > 0
-         ! A necessary condition is that the available carbon can at least pay for
-         ! the minimum leaf and root increments needed to keep the current sapwood
-         ! consistent with the pipe model.
-         !-----------------------------------------------------------------------
+            ! Step 2: decide whether the normal-allocation problem is feasible.
+            !-----------------------------------------------------------------------
+            ! Normal allocation requires a feasible interval for delta_leaf.
+            ! The lower bound is defined by three constraints:
+            ! 1. Leaf increment should not be negative:
+            !    NOTE: it can be 0 if the current leaf mass is already sufficient to maintain the existing sapwood under the pipe model, but it cannot be negative 
+            !        delta_leaf >= 0
+            !
+            ! 2. Leaf mass after allocation must be sufficient to maintain the
+            !    already existing sapwood under the pipe model:
+            !        delta_leaf >= delta_leaf_min
+            !
+            ! 3. Root increment should not be negative:
+            !     NOTE: it can be 0 if the current root mass is already sufficient to maintain the existing leaf mass under functional balance, but it cannot be negative
+            !        delta_root >= 0
+            !
+            !    Since:
+            !        root_new = leaf_new / leaf_to_root_ratio
+            !        delta_root = root_new - root_old
+            !
+            !    then:
+            !        delta_root >= 0
+            !        (leaf_old + delta_leaf) / leaf_to_root_ratio - root_old >= 0
+            !
+            !    therefore:
+            !        delta_leaf >= root_old * leaf_to_root_ratio - leaf_old
+            !
+            ! The upper bound is the maximum delta_leaf that still leaves
+            ! non-negative carbon for new sapwood.
+            !-----------------------------------------------------------------------
 
-        if (delta_leaf_min > 0.0_real64 .and. delta_root_min > 0.0_real64 .and. &
-            delta_leaf_min + delta_root_min <= c_available) then
+         lower = max( &
+         0.0_real64, &
+         delta_leaf_min, &
+         state%root_mass * params%leaf_to_root_ratio - state%leaf_mass)
 
-            result%normal_allocation = .true.
+            !--------------------------------------------------------------------
+            ! Upper bound for dL
+            ! ------------------
+            ! At the upper bound, no carbon is left for new sapwood:
+            !     c_available = dL + dR
+            ! with:
+            !     dR = (leaf_old + dL) / leaf_to_root_ratio - root_old
+            !
+            ! Substitute dR:
+            !     c_available = dL + (leaf_old + dL) / leaf_to_root_ratio - root_old
+            !
+            ! Rearrange:
+            !     c_available + root_old - leaf_old / leaf_to_root_ratio
+            !       = dL * (1 + 1 / leaf_to_root_ratio)
+            !
+            ! Therefore:
+            !     dL_max = (c_available - leaf_old / leaf_to_root_ratio + root_old)
+            !              / (1 + 1 / leaf_to_root_ratio)
+            !
+            ! This is the maximum possible dL before delta_sapwood becomes zero.
+            !--------------------------------------------------------------------
 
-         !--------------------------------------------------------------------
-         ! Lower bound for dL
-         ! ------------------
-         ! The smallest acceptable leaf increment is the amount required to keep
-         ! the already existing sapwood alive under the pipe model.
-         !--------------------------------------------------------------------
-            lower = delta_leaf_min
-
-         !--------------------------------------------------------------------
-         ! Upper bound for dL
-         ! ------------------
-         ! At the upper bound, no carbon is left for new sapwood:
-         !     c_available = dL + dR
-         !
-         ! with:
-         !     dR = (leaf_old + dL) / leaf_to_root_ratio - root_old
-         !
-         ! Substitute dR:
-         !     c_available = dL
-         !                   + (leaf_old + dL) / leaf_to_root_ratio
-         !                   - root_old
-         !
-         ! Rearrange:
-         !     c_available + root_old - leaf_old / leaf_to_root_ratio
-         !       = dL * (1 + 1 / leaf_to_root_ratio)
-         !
-         ! Therefore:
-         !     dL_max = (c_available - leaf_old / leaf_to_root_ratio + root_old)
-         !              / (1 + 1 / leaf_to_root_ratio)
-         !
-         ! This is the maximum possible dL before delta_sapwood becomes zero.
-         !--------------------------------------------------------------------
             upper = (c_available - state%leaf_mass / params%leaf_to_root_ratio + &
-                        state%root_mass) / (1.0_real64 + 1.0_real64 / params%leaf_to_root_ratio)
+               state%root_mass) / &
+               (1.0_real64 + 1.0_real64 / params%leaf_to_root_ratio)
 
             result%lower_bound_delta_leaf = lower
             result%upper_bound_delta_leaf = upper
 
-            if (upper <= lower) then
-               result%message = "Normal allocation requested, but the bisection interval is invalid because the upper bound is *lower/equal to* lower bound."
-               call abnormal_allocation(state, params, c_available, result)
-               return
-            end if
+         if (upper > lower) then
+
+            result%normal_allocation = .true.
 
 
-         !--------------------------------------------------------------------
-         ! Step 3: find a sign-changing bracket for f(delta_leaf).
-         !--------------------------------------------------------------------
-         ! The bisection method needs two values of delta_leaf, called left and
-         ! right, such that f(left) and f(right) have opposite signs. This sign
-         ! change indicates that f(delta_leaf) crosses zero between them.
-         !
-         ! The full interval [lower, upper] may not show a sign change at its
-         ! endpoints, even if a root exists somewhere inside it. Therefore, we
-         ! scan the interval in smaller segments and look for a subinterval where
-         ! the sign changes. That subinterval is then used as the initial bracket
-         ! for bisection.
-         !--------------------------------------------------------------------
+
+            ! if (upper <= lower) then
+            !    result%message = "Normal allocation requested, but the bisection interval is invalid because the upper bound is *lower/equal to* lower bound."
+            !    call abnormal_allocation(state, params, c_available, result)
+            !    return
+            ! end if
+
+
+            !--------------------------------------------------------------------
+            ! Step 3: find a sign-changing bracket for f(delta_leaf).
+            !--------------------------------------------------------------------
+            ! The bisection method needs two values of delta_leaf, called left and
+            ! right, such that f(left) and f(right) have opposite signs. This sign
+            ! change indicates that f(delta_leaf) crosses zero between them.
+            !
+            ! The full interval [lower, upper] may not show a sign change at its
+            ! endpoints, even if a root exists somewhere inside it. Therefore, we
+            ! scan the interval in smaller segments and look for a subinterval where
+            ! the sign changes. That subinterval is then used as the initial bracket
+            ! for bisection.
+            !--------------------------------------------------------------------
             f_lower = allocation_residual(state, params, c_available, lower)
             f_upper = allocation_residual(state, params, c_available, upper)
 
@@ -727,16 +744,16 @@ module carbon_allocation_offline_kernel
                return
             end if
 
-         !--------------------------------------------------------------------
-         ! Step 4: solve f(dL) = 0 by bisection.
-         !--------------------------------------------------------------------
-         ! Bisection repeatedly cuts the current bracket in half:
-         !
-         !     mid = 0.5 * (left + right)
-         !
-         ! Then it keeps the half-interval where the sign change remains.
-         ! This is robust because it does not require derivatives.
-         !--------------------------------------------------------------------
+            !--------------------------------------------------------------------
+            ! Step 4: solve f(dL) = 0 by bisection.
+            !--------------------------------------------------------------------
+            ! Bisection repeatedly cuts the current bracket in half:
+            !
+            !     mid = 0.5 * (left + right)
+            !
+            ! Then it keeps the half-interval where the sign change remains.
+            ! This is robust because it does not require derivatives.
+            !--------------------------------------------------------------------
 
             if (abs(left - right) <= default_x_tolerance) then
                result%delta_leaf = left
@@ -779,19 +796,19 @@ module carbon_allocation_offline_kernel
                result%message = "Normal allocation solved."
             end if
 
-        else
+         else
 
-         !--------------------------------------------------------------------
-         ! Abnormal allocation
-         ! -------------------
-         ! Normal allocation is not feasible. The plant does not have enough
-         ! carbon to increase leaf, root, and sapwood while also maintaining all
-         ! allometric constraints. The model then reallocates/reduces some pools
-         ! to restore allometry.
-         !--------------------------------------------------------------------
+            !--------------------------------------------------------------------
+            ! Abnormal allocation
+            ! -------------------
+            ! Normal allocation is not feasible. The plant does not have enough
+            ! carbon to increase leaf, root, and sapwood while also maintaining all
+            ! allometric constraints. The model then reallocates/reduces some pools
+            ! to restore allometry.
+            !--------------------------------------------------------------------
             call abnormal_allocation(state, params, c_available, result)
 
-        end if
+         end if
 
       end subroutine allocate
 

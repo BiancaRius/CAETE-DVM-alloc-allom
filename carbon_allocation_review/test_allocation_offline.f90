@@ -9,8 +9,15 @@ program test_allocation
   type(PlantCarbonState)     :: state
   type(AllocationOutput)     :: result
 
+  ! Carbon available to allocate (~ net primary production) over this test period.
   real(real64) :: c_available
-  real(real64) :: sapwood_area_initial
+
+  ! Variables to calculate the initial height
+  ! real(real64) :: sapwood_area_initial ! Use this if the formulation uses the pipe model to calculate height.
+  real(real64) :: stem_carbon_total_initial
+  real(real64) :: height_power_exponent
+  real(real64) :: height_power_initial
+  real(real64) :: pi_over_four
 
   !---------------------------------------------------------------------------
   ! Parameter values for a first numerical test.
@@ -34,15 +41,34 @@ program test_allocation
   state%sapwood_mass   = 10.0_real64
   state%heartwood_mass = 20.0_real64
 
+  !---------------------------------------------------------------------------
+  ! Initial plant height before allocation.
+  !---------------------------------------------------------------------------
+  ! Initial plant height from pipe model
   ! Compute initial sapwood area from the pipe model ( to calculate initial height)
-  sapwood_area_initial = state%leaf_mass * params%sla / params%latosa
-
+  ! sapwood_area_initial = state%leaf_mass * params%sla / params%latosa
   ! Compute initial plant height from the pipe model.
-  state%height = state%sapwood_mass / &
-    (params%wood_density * sapwood_area_initial)
+  ! state%height = state%sapwood_mass / &
+  !   (params%wood_density * sapwood_area_initial)
+
+  !ALTERNATIVE: Initial height from total stem carbon
+  stem_carbon_total_initial = state%sapwood_mass + state%heartwood_mass
+
+  height_power_exponent = 1.0_real64 + 2.0_real64 / params%allom3
+
+  pi_over_four = acos(-1.0_real64) / 4.0_real64
+
+  height_power_initial = params%allom2**(2.0_real64 / params%allom3) * &
+                       (stem_carbon_total_initial / params%wood_density) / &
+                       pi_over_four
+
+  state%height = height_power_initial**(1.0_real64 / height_power_exponent)
+  print *, "Initial height calculated from total stem carbon = ", state%height
+
+
 
   ! Carbon available for allocation over this test period.
-  c_available = 5.0_real64
+  c_available = 0.5_real64
 
   call allocate(state, params, c_available, result)
 
