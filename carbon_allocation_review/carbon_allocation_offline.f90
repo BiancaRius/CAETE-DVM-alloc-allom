@@ -756,39 +756,76 @@ module carbon_allocation_offline_kernel
             !--------------------------------------------------------------------
 
             if (abs(left - right) <= default_x_tolerance) then
+
+               ! The initial bracket is already sufficiently narrow in terms
+               ! of delta_leaf.
                result%delta_leaf = left
                result%converged = .true.
                result%iterations = 0
+               result%message = "Normal allocation solved: initial delta_leaf interval was already within tolerance."
+
             else
+
                f_left = allocation_residual(state, params, c_available, left)
 
-                do i = 1, default_max_iterations
-                    mid   = 0.5_real64 * (left + right)
-                      f_mid = allocation_residual(state, params, c_available, mid)
+               do i = 1, default_max_iterations
 
-                    if (abs(f_mid) <= default_f_tolerance .or. &
-                        abs(right - left) <= default_x_tolerance) then
-                        result%delta_leaf = mid
-                        result%converged = .true.
-                        result%iterations = i
-                        exit
-                    end if
+                  mid   = 0.5_real64 * (left + right)
+                  f_mid = allocation_residual(state, params, c_available, mid)
 
-                      if (f_left * f_mid <= 0.0_real64) then
-                        right = mid
-                      else
-                         left = mid
-                         f_left = f_mid
-                      end if
-                   end do
+                  !---------------------------------------------------------------
+                  ! First convergence criterion:
+                  ! residual tolerance.
+                  !
+                  ! This means that the allocation equation itself is close enough
+                  ! to zero.
+                  !---------------------------------------------------------------
+                  if (abs(f_mid) <= default_f_tolerance) then
 
-                if (.not. result%converged) then
-                    result%delta_leaf = 0.5_real64 * (left + right)
-                    result%iterations = default_max_iterations
-                    result%message = "Bisection reached maximum iterations; returning best midpoint estimate."
-                end if
+                     result%delta_leaf = mid
+                     result%converged = .true.
+                     result%iterations = i
+                     result%message = "Normal allocation solved: residual tolerance reached."
+                     exit
+
+                  !---------------------------------------------------------------
+                  ! Second convergence criterion:
+                  ! delta_leaf interval tolerance.
+                  !
+                  ! This means that the bisection interval is already very small,
+                  ! even if the residual is not below default_f_tolerance.
+                  !---------------------------------------------------------------
+                  else if (abs(right - left) <= default_x_tolerance) then
+
+                     result%delta_leaf = mid
+                     result%converged = .true.
+                     result%iterations = i
+                     result%message = "Normal allocation solved: delta_leaf interval tolerance reached."
+                     exit
+
+                  end if
+
+                  !---------------------------------------------------------------
+                  ! Update the bisection bracket.
+                  ! Keep the half-interval where the sign change remains.
+                  !---------------------------------------------------------------
+                  if (f_left * f_mid <= 0.0_real64) then
+                     right = mid
+                  else
+                     left = mid
+                     f_left = f_mid
+                  end if
+
+               end do
+
+               if (.not. result%converged) then
+                  result%delta_leaf = 0.5_real64 * (left + right)
+                  result%iterations = default_max_iterations
+                  result%message = "Bisection reached maximum iterations; returning best midpoint estimate."
+               end if
+
             end if
-
+            
             ! Use the solved dL to compute the other increments and final state.
             call final_allocation(state, params, c_available, result%delta_leaf, result)
 
@@ -1035,7 +1072,6 @@ module carbon_allocation_offline_kernel
          result%message = "Abnormal allocation used. Track litter and sapwood-to-heartwood fluxes explicitly in integration."
          ! The allocation residual is not applicable to abnormal allocation.
          result%allocation_residual_final = 0.0_real64
-         
       end subroutine abnormal_allocation
 
 end module carbon_allocation_offline_kernel

@@ -68,8 +68,8 @@ program test_allocation
   !---------------------------------------------------------------------------
 
   ! Carbon available for allocation over this test period (~ net primary production).
-  ! c_available = 5.0_real64
-  c_available = 0.5_real64
+  c_available = 5.0_real64
+  ! c_available = 0.5_real64
 
 
   call allocate(state, params, c_available, result)
