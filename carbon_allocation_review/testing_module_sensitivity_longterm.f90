@@ -91,7 +91,7 @@ program test_storage_allocation_sensitivity
   integer :: checkpoint_unit
 
   type(Parameters) :: params
-  type(StorageAllocationControls) :: controls
+  type(ControlsParam) :: controls
   type(PlantCarbonState) :: initial_state
   type(ScenarioSummary) :: summary
 
@@ -201,7 +201,7 @@ contains
 
   subroutine initialize_controls(controls, adjustment_days, max_fraction, background_mode)
 
-    type(StorageAllocationControls), intent(out) :: controls
+    type(ControlsParam), intent(out) :: controls
     real(real64), intent(in) :: adjustment_days
     real(real64), intent(in) :: max_fraction
     integer, intent(in) :: background_mode
@@ -310,7 +310,7 @@ contains
 
     integer, intent(in) :: scenario_id
     type(Parameters), intent(in) :: params
-    type(StorageAllocationControls), intent(in) :: controls
+    type(ControlsParam), intent(in) :: controls
     type(PlantCarbonState), intent(in) :: initial_state
     real(real64), intent(in) :: npp_rate
     real(real64), intent(in) :: initial_storage
@@ -414,7 +414,7 @@ contains
     type(ScenarioSummary), intent(out) :: summary
     integer, intent(in) :: scenario_id
     type(Parameters), intent(in) :: params
-    type(StorageAllocationControls), intent(in) :: controls
+    type(ControlsParam), intent(in) :: controls
     type(PlantCarbonState), intent(in) :: initial_state
     real(real64), intent(in) :: npp_rate
     real(real64), intent(in) :: initial_storage
