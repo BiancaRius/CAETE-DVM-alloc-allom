@@ -28,7 +28,11 @@ module carbon_allocation_offline_kernel
 ! -------------------------------------------------------
 ! Daily carbon input is first added to a labile storage pool. Structural
 ! growth is then paid from storage only when there is positive allocation
-! demand and enough available carbon.
+! demand and enough available carbon. If negative NPP exhausts storage, the
+! remaining deficit is treated as a starvation pressure on living tissues:
+! one third is assigned to leaves, one third to fine roots, and one third to
+! sapwood. Leaf and fine-root losses remove carbon from the plant, whereas
+! sapwood loss is converted into heartwood.
 !
 ! In contrast to the legacy rigid allocation scheme (strictly based in LPJ), this routine does not
 ! force the plant to satisfy allometric constraints exactly at each daily
@@ -65,7 +69,6 @@ module carbon_allocation_offline_kernel
    public :: Parameters
    public :: PlantCarbonState
    public :: AllocationOutput
-   public :: allocation_residual
    public :: leaf_requirement
    public :: ControlsParam
    public :: allocate_gradual_with_storage
@@ -234,62 +237,59 @@ module carbon_allocation_offline_kernel
       real(real64) :: height_new       = 0.0_real64
       real(real64) :: stem_diameter_new = 0.0_real64
 
-      !! Diagnostic residuals and balance checks.
-      ! These variables are numerical diagnostics used to verify
-      ! whether the allocation result satisfies the equations that it is supposed
-      ! to satisfy.
+            !! Diagnostic residuals and balance checks.
+      ! These variables are numerical diagnostics used to evaluate the gradual
+      ! storage-based allocation result.
       !
-      ! In an ideal mathematical solution, the residuals would be exactly zero.
-      ! In floating-point computation, they are expected to be very close to zero,
-      ! but not necessarily exactly zero, because the bisection method stops when
-      ! numerical tolerances are reached.
+      ! In this allocation scheme, the plant is not forced to satisfy allometric
+      ! constraints exactly at each daily timestep. Instead, the leaf-root
+      ! relationship and the pipe-model relationship are used to define
+      ! structural growth demands that gradually move the plant toward
+      ! allometric consistency.
       !
-      ! carbon_balance_error checks conservation of the available carbon over the
-      ! living allocation increments:
-      !     carbon_balance_error = c_available
-      !                            - (delta_leaf + delta_root + delta_sapwood)
-      ! For normal allocation, this should be approximately zero.
+      ! Therefore, leaf_root_residual and pipe_model_residual are not expected
+      ! to be exactly zero after every allocation step. They should be interpreted
+      ! as diagnostic measures of the current allometric imbalance. Under
+      ! adequate carbon supply and reasonable parameter values, these residuals
+      ! should generally move toward smaller absolute values over time.
       !
-      ! leaf_root_residual checks whether the final leaf and fine-root pools obey
-      ! the functional balance relationship:
-      !     leaf_mass_new = leaf_to_root_ratio * root_mass_new
+      ! carbon_balance_error is kept as a backward-compatible diagnostic name.
+      ! In the gradual allocation scheme, it is equivalent to the structural
+      ! balance error:
       !
-      ! Therefore:
-      !     leaf_root_residual = leaf_mass_new
-      !                          - leaf_to_root_ratio * root_mass_new
-      ! For normal allocation, this should be approximately zero.
+      !     carbon_balance_error =
+      !         carbon_to_allocate - (delta_leaf + delta_root + delta_sapwood)
       !
-      ! pipe_model_residual checks whether the final leaf area and sapwood area
-      ! obey the pipe-model relationship:
-      !     leaf_area_new = latosa * sapwood_area_new
+      ! This value should remain close to zero, because all carbon assigned to
+      ! structural growth must be distributed among leaf, fine-root, and sapwood
+      ! increments.
       !
-      ! Therefore:
-      !     pipe_model_residual = leaf_area_new
-      !                           - latosa * sapwood_area_new
-      ! For normal allocation, this should be approximately zero.
+      ! leaf_root_residual measures the mismatch between final leaf and fine-root
+      ! pools:
+      !
+      !     leaf_root_residual =
+      !         leaf_mass_new - leaf_to_root_ratio * root_mass_new
+      !
+      ! A positive value indicates relatively more leaf carbon than expected from
+      ! the target leaf-root relationship. A negative value indicates relatively
+      ! more fine-root carbon.
+      !
+      ! pipe_model_residual measures the mismatch between final leaf area and
+      ! sapwood conductive area:
+      !
+      !     pipe_model_residual =
+      !         leaf_area_new - latosa * sapwood_area_new
+      !
+      ! A negative value indicates that leaf area is low relative to sapwood area.
+      ! A positive value indicates that leaf area is high relative to sapwood area.
       !
       ! final_root_residual is reserved for additional root-related diagnostics
       ! during integration with the full model. It can be removed if it remains
       ! redundant with leaf_root_residual.
 
-      real(real64) :: carbon_balance_error = 0.0_real64
-      real(real64) :: leaf_root_residual   = 0.0_real64
-      real(real64) :: pipe_model_residual  = 0.0_real64
-      real(real64) :: final_root_residual  = 0.0_real64
-
-      ! Residual of the nonlinear equation f(dL) = 0 at the selected solution.
-      real(real64) :: allocation_residual_final = 0.0_real64
-
-      !! Bounds used by the normal-allocation solver 
-      ! Inside this interval, the solver searches for the
-      ! delta_leaf value that also makes the stem geometry and pipe-model
-      ! constraints mutually consistent (more detailed explanations below)
-      real(real64) :: lower_bound_delta_leaf = 0.0_real64
-      real(real64) :: upper_bound_delta_leaf = 0.0_real64
-
-
       ! Diagnostics specific to gradual allocation with labile carbon storage.
-      ! These fields remain zero when the original rigid allocate() routine is used.
+      ! These variables track daily carbon input, storage dynamics, structural
+      ! demand, realized allocation, and allometric residuals.
       real(real64) :: npp_daily = 0.0_real64
       real(real64) :: carbon_storage_before = 0.0_real64
       real(real64) :: carbon_storage_after = 0.0_real64
@@ -298,13 +298,36 @@ module carbon_allocation_offline_kernel
       real(real64) :: leaf_demand_daily = 0.0_real64
       real(real64) :: root_demand_daily = 0.0_real64
       real(real64) :: sapwood_demand_daily = 0.0_real64
+      real(real64) :: pipe_model_residual  = 0.0_real64
+      real(real64) :: leaf_root_residual   = 0.0_real64
+      real(real64) :: carbon_balance_error = 0.0_real64
+
+
+
 
       ! Carbon-accounting diagnostics for gradual allocation.
       ! storage_after_npp_unclamped stores the raw storage value after adding NPP.
       ! If this value is negative, storage is clamped to zero and the missing
-      ! carbon is reported as unmet_storage_deficit.
+      ! carbon is first reported as unmet_storage_deficit.
+      !
+      ! The starvation rule then tries to represent the biological consequence
+      ! of this deficit on living tissues. The deficit is split equally among
+      ! leaves, fine roots, and sapwood. Leaf and fine-root losses remove carbon
+      ! from the plant. Sapwood loss is treated as sapwood-to-heartwood
+      ! conversion, so it reduces living sapwood but does not remove carbon from
+      ! total plant biomass.
+      !
+      ! Because sapwood-to-heartwood conversion conserves total plant carbon,
+      ! only leaf_starvation_loss + root_starvation_loss pay part of the carbon
+      ! deficit. Any remaining deficit is reported as unpaid_carbon_deficit.
       real(real64) :: storage_after_npp_unclamped = 0.0_real64
       real(real64) :: unmet_storage_deficit = 0.0_real64
+      real(real64) :: leaf_starvation_loss = 0.0_real64
+      real(real64) :: root_starvation_loss = 0.0_real64
+      real(real64) :: sapwood_starvation_loss = 0.0_real64
+      real(real64) :: sapwood_to_heartwood = 0.0_real64
+      real(real64) :: starvation_carbon_loss = 0.0_real64
+      real(real64) :: unpaid_carbon_deficit = 0.0_real64
 
       ! The structural balance checks whether all carbon assigned to growth was
       ! actually distributed among leaf, fine-root, and sapwood increments.
@@ -316,9 +339,9 @@ module carbon_allocation_offline_kernel
       real(real64) :: storage_balance_error = 0.0_real64
 
       ! The whole-plant balance checks the combined structural + storage carbon.
-      ! If unmet_storage_deficit is zero, the whole plant should change by NPP.
-      ! If unmet_storage_deficit is positive, the allocation routine did not have
-      ! enough storage to pay the full negative NPP, and this deficit is reported.
+      ! If unpaid_carbon_deficit is zero, the whole plant should change by NPP.
+      ! If unpaid_carbon_deficit is positive, storage and living-tissue losses
+      ! were still insufficient to fully pay the negative-NPP deficit.
       real(real64) :: whole_plant_balance_error = 0.0_real64
 
       ! Maximum structural carbon allocation allowed by the daily limiter.
@@ -387,196 +410,6 @@ module carbon_allocation_offline_kernel
 
 
    !==========================================================================
-   !> Nonlinear residual f(dL) used by the normal-allocation bisection solver.
-   !==========================================================================
-      function allocation_residual(state, params, c_available, delta_leaf) result(f)
-
-         type(PlantCarbonState),    intent(in) :: state
-         type(Parameters), intent(in) :: params
-         real(real64),              intent(in) :: c_available
-         real(real64),              intent(in) :: delta_leaf
-
-         real(real64) :: f
-
-         real(real64) :: leaf_new
-         real(real64) :: root_new
-         real(real64) :: delta_root
-         real(real64) :: delta_sapwood
-         real(real64) :: sapwood_new
-         real(real64) :: stem_carbon_total_new
-         real(real64) :: a1
-         real(real64) :: a2
-         real(real64) :: a3
-         real(real64) :: pi_over_four
-         real(real64) :: height_power_pipe_model
-         real(real64) :: height_power_total_stem
-
-         !-----------------------------------------------------------------------
-         ! Unknown
-         ! -------
-         ! The bisection method solves for:
-         !
-         !     x = delta_leaf = dL
-         !
-         ! Once x is chosen, all other increments are determined.
-         !-----------------------------------------------------------------------
-
-         leaf_new = state%leaf_mass + delta_leaf
-
-         !-----------------------------------------------------------------------
-         ! Fine-root increment from functional balance
-         ! -------------------------------------------
-         ! Functional balance after allocation:
-         !     leaf_new = leaf_to_root_ratio * root_new
-         !
-         ! Therefore:
-         !     root_new = leaf_new / leaf_to_root_ratio
-         !
-         ! The increment is:
-         !     delta_root = root_new - root_old
-         !
-         ! which gives:
-         !     delta_root = (leaf_old + delta_leaf) / leaf_to_root_ratio
-         !                  - root_old
-         !-----------------------------------------------------------------------
-         root_new   = leaf_new / params%leaf_to_root_ratio
-         delta_root = root_new - state%root_mass
-
-         !-----------------------------------------------------------------------
-         ! Sapwood increment from carbon conservation
-         ! ------------------------------------------
-         ! Carbon conservation over the allocation period:
-         !     c_available = delta_leaf + delta_root + delta_sapwood
-         !
-         ! Therefore:
-         !     delta_sapwood = c_available - delta_leaf - delta_root
-         !
-         ! Substitute delta_root:
-         !     delta_sapwood = c_available - delta_leaf
-         !                     - ((leaf_old + delta_leaf) / leaf_to_root_ratio
-         !                        - root_old)
-         !
-         ! Final sapwood mass:
-         !     sapwood_new = sapwood_old + delta_sapwood
-         !
-         ! which expands to:
-         !     sapwood_new = sapwood_old + c_available - delta_leaf
-         !                   - ((leaf_old + delta_leaf) / leaf_to_root_ratio)
-         !                   + root_old
-         !
-         ! It is the final sapwood mass written as a function of delta_leaf.
-         !-----------------------------------------------------------------------
-
-         delta_sapwood = c_available - delta_leaf - delta_root
-         sapwood_new   = state%sapwood_mass + delta_sapwood
-
-         ! Guard against non-physical values during root search.
-         ! The bisection bounds should normally avoid these cases, but this protects
-         ! the residual function if it is called outside the valid interval.
-         if (leaf_new <= 0.0_real64 .or. sapwood_new <= 0.0_real64) then
-            f = huge(1.0_real64)
-            return
-         end if
-
-         ! ------------------------------------------------
-         ! The normal-allocation solution requires consistency between:
-         !   (1) total stem geometry, using sapwood + heartwood, and
-         !   (2) the pipe model, using leaf mass + sapwood mass.
-         !
-         ! Both routes can be rearranged to compute the same quantity (plant height raised to the exponent (1 + 2 / allom3)):
-         !     height_new**(1 + 2 / allom3)
-         !
-         ! The residual is:
-         !     f(delta_leaf) = height_power_total_stem
-         !                     - height_power_pipe_model
-         !
-         ! The correct allocation satisfies:
-         !     f(delta_leaf) = 0
-         !-----------------------------------------------------------------------
-
-         a1 = 2.0_real64 / params%allom3
-         a2 = 1.0_real64 + a1
-         a3 = params%allom2**a1
-         pi_over_four = pi / 4.0_real64
-
-         !-----------------------------------------------------------------------
-         ! Expression 1: total stem geometry
-         ! ---------------------------------
-         ! Height-diameter allometry:
-         !     height = allom2 * diameter**allom3
-         !
-         ! Stem volume:
-         !     stem_volume = height * pi * diameter**2 / 4
-         !
-         ! Total stem carbon includes living sapwood and non-living heartwood:
-         !     stem_carbon_total_new = sapwood_new + heartwood_old
-         !
-         ! Wood density:
-         !     wood_density = stem_carbon_total_new / stem_volume
-         !
-         ! Combining these equations and eliminating diameter gives:
-         !     height_new**(1 + 2 / allom3)
-         !       = allom2**(2 / allom3)
-         !         * ((sapwood_new + heartwood_old) / wood_density)
-         !         / (pi / 4)
-         !
-         ! This is height_power_total_stem.
-         !-----------------------------------------------------------------------
-
-         stem_carbon_total_new = sapwood_new + state%heartwood_mass
-
-         ! Note this is not the actual height, but height raised to the power (1 + 2 / allom3), which is the form that allows direct comparison with the pipe-model expression.
-         height_power_total_stem = a3 * (stem_carbon_total_new / params%wood_density) &
-                                    / pi_over_four
-
-         !-----------------------------------------------------------------------
-         ! Expression 2: pipe model plus sapwood volume
-         ! --------------------------------------------
-         ! Pipe model:
-         !     leaf_area = latosa * sapwood_area
-         !
-         ! Leaf area:
-         !     leaf_area = leaf_new * SLA
-         !
-         ! Therefore:
-         !     sapwood_area = leaf_new * SLA / latosa
-         !
-         ! Sapwood volume:
-         !     sapwood_volume = height * sapwood_area
-         !
-         ! Sapwood mass:
-         !     sapwood_new = wood_density * sapwood_volume
-         !                 = wood_density * height * sapwood_area
-         !
-         ! Solve for height:
-         !     height = sapwood_new / (wood_density * sapwood_area)
-         !
-         ! Substitute sapwood_area:
-         !     height = sapwood_new /
-         !              (wood_density * leaf_new * SLA / latosa)
-         !
-         ! Raise both sides to:
-         !     1 + 2 / allom3
-         ! to match the total-stem expression:
-         !     height_new**(1 + 2 / allom3)
-         !       = [ sapwood_new /
-         !           (wood_density * leaf_new * SLA / latosa) ]
-         !         **(1 + 2 / allom3)
-         !
-         ! This is height_power_pipe_model.
-         !-----------------------------------------------------------------------
-
-         ! Note this is not actual height, but height raised to the power (1 + 2 / allom3), which is the form that allows direct comparison with the total-stem expression.
-         height_power_pipe_model = &
-            (sapwood_new / (leaf_new * params%sla * params%wood_density / params%latosa))**a2
-
-         ! The allocation residual is zero only when both structural routes agree.
-         f = height_power_total_stem - height_power_pipe_model
-
-      end function allocation_residual
-
-
-   !==========================================================================
    !> Gradual daily allocation with labile carbon storage.
    !==========================================================================
       subroutine allocate_gradual_with_storage(state, params, controls, npp_rate, &
@@ -624,6 +457,7 @@ module carbon_allocation_offline_kernel
          real(real64) :: height_power_total_stem
          real(real64) :: height_power_exponent
          real(real64) :: pi_over_four
+         real(real64) :: starvation_share
 
          real(real64) :: structural_carbon_before
          real(real64) :: structural_carbon_after
@@ -635,19 +469,20 @@ module carbon_allocation_offline_kernel
 
          result%carbon_storage_before = carbon_storage
 
-         ! Convert the annualized NPP rate into carbon input over this time step.
+         ! Convert NPP 
          ! If npp_rate is in kgC per area per year and dt_years is 1/365,
          ! npp_daily has units of kgC per area per day.
          result%npp_daily = npp_rate * controls%dt_years
 
-         ! Update the labile carbon storage. Negative NPP consumes storage.
+         ! Update the labile carbon storage. Negative NPP consumes storage. ATTENTION: THERE IS ALREADY A C_DEFICIT
          ! The unclamped value is kept for carbon-accounting diagnostics.
          result%storage_after_npp_unclamped = carbon_storage + result%npp_daily
          storage_after_npp = result%storage_after_npp_unclamped
 
          ! Storage cannot become negative. If NPP is strongly negative, the
-         ! remaining deficit is not paid by this routine. We report that amount
-         ! explicitly instead of hiding it inside the storage clamp.
+         ! remaining deficit is first reported as unmet_storage_deficit. A
+         ! starvation rule below then tries to pay part of this deficit by
+         ! reducing living tissues.
          if (storage_after_npp < 0.0_real64) then
             result%unmet_storage_deficit = -storage_after_npp
             storage_after_npp = 0.0_real64
@@ -818,11 +653,42 @@ module carbon_allocation_offline_kernel
 
          end if
 
-         ! Update structural carbon pools.
+         ! Update structural carbon pools after positive growth allocation.
          result%leaf_mass_new = state%leaf_mass + result%delta_leaf
          result%root_mass_new = state%root_mass + result%delta_root
          result%sapwood_mass_new = state%sapwood_mass + result%delta_sapwood
          result%heartwood_mass_new = state%heartwood_mass
+
+         !--------------------------------------------------------------------
+         ! Starvation rule for negative NPP not covered by storage.
+         !--------------------------------------------------------------------
+         ! If storage is exhausted by negative NPP, the remaining deficit is split
+         ! equally among the three living tissues. Leaf and fine-root losses are
+         ! treated as carbon leaving the plant. Sapwood loss is treated as
+         ! sapwood-to-heartwood conversion: living sapwood decreases, heartwood
+         ! increases by the same amount, and total stem carbon is conserved.
+         !
+         ! The min() calls prevent any living pool from becoming negative when
+         ! the requested loss is larger than the pool available in that tissue.
+         if (result%unmet_storage_deficit > 0.0_real64) then
+            starvation_share = result%unmet_storage_deficit / 3.0_real64
+
+            result%leaf_starvation_loss = min(starvation_share, result%leaf_mass_new)
+            result%root_starvation_loss = min(starvation_share, result%root_mass_new)
+            result%sapwood_starvation_loss = min(starvation_share, result%sapwood_mass_new)
+            result%sapwood_to_heartwood = result%sapwood_starvation_loss
+
+            result%leaf_mass_new = result%leaf_mass_new - result%leaf_starvation_loss
+            result%root_mass_new = result%root_mass_new - result%root_starvation_loss
+            result%sapwood_mass_new = result%sapwood_mass_new - result%sapwood_starvation_loss
+            result%heartwood_mass_new = result%heartwood_mass_new + result%sapwood_to_heartwood
+
+            result%starvation_carbon_loss = result%leaf_starvation_loss + &
+                                            result%root_starvation_loss
+            result%unpaid_carbon_deficit = result%unmet_storage_deficit - &
+                                           result%starvation_carbon_loss
+            result%unpaid_carbon_deficit = max(0.0_real64, result%unpaid_carbon_deficit)
+         end if
 
          ! Update storage after structural allocation.
          carbon_storage = storage_after_npp - result%carbon_to_allocate
@@ -872,7 +738,8 @@ module carbon_allocation_offline_kernel
              result%unmet_storage_deficit - result%carbon_to_allocate)
 
          ! Whole-plant carbon accounting: structural + storage carbon should
-         ! change by NPP, except when negative NPP exceeds available storage.
+         ! change by NPP, except for the part of the negative-NPP deficit that
+         ! remains unpaid after the starvation rule.
          structural_carbon_before = state%leaf_mass + state%root_mass + &
             state%sapwood_mass + state%heartwood_mass
 
@@ -903,7 +770,7 @@ module carbon_allocation_offline_kernel
          result%pipe_model_residual = leaf_area_new - params%latosa * sapwood_area_from_mass
          result%allocation_residual_final = 0.0_real64
 
-         result%message = "Gradual storage allocation used; allometry follows the original lower-bound logic."
+         result%message = "Gradual storage allocation used with starvation loss from living tissues."
 
       end subroutine allocate_gradual_with_storage
 
