@@ -83,6 +83,15 @@ module carbon_allocation_offline_kernel
    ! Tolerance used only for diagnostic carbon-accounting checks.
    real(real64), parameter :: carbon_accounting_tolerance = 1.0e-10_real64
 
+   ! Annual turnover rates for plant carbon compartments.
+   ! Leaf, fine-root, labile storage, and heartwood turnover remove carbon
+   ! from the plant. Sapwood turnover converts living sapwood into heartwood.
+   real(real64), parameter :: l_turnover   = 1.0_real64 / 4.0_real64
+   real(real64), parameter :: r_turnover   = 1.0_real64 / 4.0_real64
+   real(real64), parameter :: s_turnover   = 1.0_real64 / 20.0_real64
+   real(real64), parameter :: sto_turnover = 0.0_real64 !! for the first run it will be 0 1.0_real64 / 20.0_real64
+   real(real64), parameter :: h_turnover   = 1.0_real64 / 150.0_real64
+
   !--------------------------------------------------------------------------
   ! Input parameters
   !--------------------------------------------------------------------------
@@ -103,16 +112,17 @@ module carbon_allocation_offline_kernel
       ! Example: gC m-3 if carbon pools are in gC.
       real(real64) :: wood_density
 
+      
+
+
+     !!! Global parameters !!!
+     !-----------------------!
       ! Leaf area to sapwood cross-sectional area ratio (global value)
       ! This is the pipe-model coefficient.
       ! Pipe model:
       !     leaf_area = latosa * sapwood_cross_sectional_area
       real(real64) :: latosa
 
-
-     !!! Global parameters !!!
-     !-----------------------!
-     
      ! Leaf-to-fine-root mass ratio for the allocation period.
      ! Functional balance:
      !     leaf_mass = leaf_to_root_ratio * root_mass
@@ -148,21 +158,27 @@ module carbon_allocation_offline_kernel
       ! instantly; instead, roughly 1/365 of the deficit becomes demand per day.
       real(real64) :: allometric_adjustment_days = 365.0_real64
 
-      ! Maximum fraction of current living structural carbon that can become new
-      ! structural biomass in one time step. This avoids unrealistic daily jumps.
-      ! This Upper bound limits daily structural growth and it is expressed as a fraction of the
-      ! current living structural carbon pool:
+      ! Maximum relative structural growth allowed in one time step.
       !
-      !     living_carbon = leaf_mass + root_mass + sapwood_mass
+      ! This parameter is a daily growth-rate cap. It prevents the plant from
+      ! converting a very large amount of storage carbon into new structural biomass
+      ! in a single time step, even when storage and allometric demand are both high.
       !
-      ! This parameter only limits the maximum amount of new structural biomass 
-      ! that can be produced in one timestep, even if storage carbon and structural 
-      ! demand are both high. For example, max_allocation_fraction = 0.005 means that, in one daily
-      ! timestep, structural growth cannot exceed 0.5% of the current living
-      ! structural carbon. This prevents unrealistic jumps in leaf, root, or
-      ! sapwood biomass when large storage pools or large allometric deficits
-      ! are present.
+      ! This is important because the original LPJ allocation logic was annual,
+      ! whereas this routine is applied at a daily time step. Without this cap, large
+      ! allometric deficits or large storage pools could produce unrealistic daily
+      ! jumps in leaf, fine-root, or sapwood biomass.
+      !
+      ! For example, max_allocation_fraction = 0.005 means that daily structural
+      ! growth cannot exceed 0.5% of current living structural carbon:
+      !
+      !     max_daily_allocation = 0.005 * (leaf + root + sapwood)
+      !
+      ! This parameter should be interpreted as a maximum tissue-construction
+      ! capacity, not as a carbon-availability term.
+
       real(real64) :: max_allocation_fraction = 0.005_real64
+
 
       !!!! TO BE READJUSTED (can express fast/slow growth strategies)
       !---------------------
@@ -287,9 +303,24 @@ module carbon_allocation_offline_kernel
       ! during integration with the full model. It can be removed if it remains
       ! redundant with leaf_root_residual.
 
+      real(real64) :: carbon_balance_error = 0.0_real64
+      real(real64) :: leaf_root_residual   = 0.0_real64
+      real(real64) :: pipe_model_residual  = 0.0_real64
+      real(real64) :: final_root_residual  = 0.0_real64
+
+      ! Residual of the nonlinear equation f(dL) = 0 at the selected solution.
+      real(real64) :: allocation_residual_final = 0.0_real64
+
+      !! Bounds used by the normal-allocation solver 
+      ! Inside this interval, the solver searches for the
+      ! delta_leaf value that also makes the stem geometry and pipe-model
+      ! constraints mutually consistent (more detailed explanations below)
+      real(real64) :: lower_bound_delta_leaf = 0.0_real64
+      real(real64) :: upper_bound_delta_leaf = 0.0_real64
+
+
       ! Diagnostics specific to gradual allocation with labile carbon storage.
-      ! These variables track daily carbon input, storage dynamics, structural
-      ! demand, realized allocation, and allometric residuals.
+      ! These fields remain zero when the original rigid allocate() routine is used.
       real(real64) :: npp_daily = 0.0_real64
       real(real64) :: carbon_storage_before = 0.0_real64
       real(real64) :: carbon_storage_after = 0.0_real64
@@ -298,12 +329,6 @@ module carbon_allocation_offline_kernel
       real(real64) :: leaf_demand_daily = 0.0_real64
       real(real64) :: root_demand_daily = 0.0_real64
       real(real64) :: sapwood_demand_daily = 0.0_real64
-      real(real64) :: pipe_model_residual  = 0.0_real64
-      real(real64) :: leaf_root_residual   = 0.0_real64
-      real(real64) :: carbon_balance_error = 0.0_real64
-
-
-
 
       ! Carbon-accounting diagnostics for gradual allocation.
       ! storage_after_npp_unclamped stores the raw storage value after adding NPP.
@@ -329,6 +354,19 @@ module carbon_allocation_offline_kernel
       real(real64) :: starvation_carbon_loss = 0.0_real64
       real(real64) :: unpaid_carbon_deficit = 0.0_real64
 
+      ! Turnover diagnostics. Leaf, fine-root, storage, and heartwood turnover
+      ! are carbon losses from the plant. Sapwood turnover is a conversion from
+      ! living sapwood to heartwood and therefore does not directly remove total
+      ! plant carbon.
+      real(real64) :: leaf_turnover_loss = 0.0_real64
+      real(real64) :: root_turnover_loss = 0.0_real64
+      real(real64) :: sapwood_turnover_loss = 0.0_real64
+      real(real64) :: storage_turnover_loss = 0.0_real64
+      real(real64) :: heartwood_turnover_loss = 0.0_real64
+      real(real64) :: sapwood_to_heartwood_turnover = 0.0_real64
+      real(real64) :: total_sapwood_to_heartwood = 0.0_real64
+      real(real64) :: turnover_carbon_loss = 0.0_real64
+
       ! The structural balance checks whether all carbon assigned to growth was
       ! actually distributed among leaf, fine-root, and sapwood increments.
       real(real64) :: structural_increment_sum = 0.0_real64
@@ -339,9 +377,10 @@ module carbon_allocation_offline_kernel
       real(real64) :: storage_balance_error = 0.0_real64
 
       ! The whole-plant balance checks the combined structural + storage carbon.
-      ! If unpaid_carbon_deficit is zero, the whole plant should change by NPP.
-      ! If unpaid_carbon_deficit is positive, storage and living-tissue losses
-      ! were still insufficient to fully pay the negative-NPP deficit.
+      ! If unpaid_carbon_deficit is zero and turnover is zero, the whole plant
+      ! should change by NPP. With turnover, carbon losses from leaf, fine root,
+      ! storage, and heartwood are subtracted. Sapwood turnover is excluded from
+      ! this loss term because it is converted into heartwood.
       real(real64) :: whole_plant_balance_error = 0.0_real64
 
       ! Maximum structural carbon allocation allowed by the daily limiter.
@@ -423,6 +462,7 @@ module carbon_allocation_offline_kernel
          type(AllocationOutput),          intent(inout) :: result
 
          real(real64) :: storage_after_npp
+         real(real64) :: storage_after_allocation
          real(real64) :: living_carbon
          real(real64) :: max_daily_allocation
 
@@ -469,12 +509,12 @@ module carbon_allocation_offline_kernel
 
          result%carbon_storage_before = carbon_storage
 
-         ! Convert NPP 
+         ! Convert the annualized NPP rate into carbon input over this time step.
          ! If npp_rate is in kgC per area per year and dt_years is 1/365,
          ! npp_daily has units of kgC per area per day.
          result%npp_daily = npp_rate * controls%dt_years
 
-         ! Update the labile carbon storage. Negative NPP consumes storage. ATTENTION: THERE IS ALREADY A C_DEFICIT
+         ! Update the labile carbon storage. Negative NPP consumes storage.
          ! The unclamped value is kept for carbon-accounting diagnostics.
          result%storage_after_npp_unclamped = carbon_storage + result%npp_daily
          storage_after_npp = result%storage_after_npp_unclamped
@@ -691,8 +731,43 @@ module carbon_allocation_offline_kernel
          end if
 
          ! Update storage after structural allocation.
-         carbon_storage = storage_after_npp - result%carbon_to_allocate
+         storage_after_allocation = storage_after_npp - result%carbon_to_allocate
+
+         !--------------------------------------------------------------------
+         ! Continuous compartment turnover.
+         !--------------------------------------------------------------------
+         ! Turnover is applied after NPP, starvation, and structural allocation.
+         ! The rates are annual rates and are converted to the current timestep
+         ! by multiplying by controls%dt_years. The min() guards prevent small
+         ! numerical or extreme-timestep problems from making pools negative.
+         result%leaf_turnover_loss = min(result%leaf_mass_new, &
+            result%leaf_mass_new * l_turnover * controls%dt_years)
+         result%root_turnover_loss = min(result%root_mass_new, &
+            result%root_mass_new * r_turnover * controls%dt_years)
+         result%sapwood_turnover_loss = min(result%sapwood_mass_new, &
+            result%sapwood_mass_new * s_turnover * controls%dt_years)
+         result%storage_turnover_loss = min(storage_after_allocation, &
+            storage_after_allocation * sto_turnover * controls%dt_years)
+         result%heartwood_turnover_loss = min(result%heartwood_mass_new, &
+            result%heartwood_mass_new * h_turnover * controls%dt_years)
+
+         result%sapwood_to_heartwood_turnover = result%sapwood_turnover_loss
+
+         result%leaf_mass_new = result%leaf_mass_new - result%leaf_turnover_loss
+         result%root_mass_new = result%root_mass_new - result%root_turnover_loss
+         result%sapwood_mass_new = result%sapwood_mass_new - result%sapwood_turnover_loss
+         result%heartwood_mass_new = result%heartwood_mass_new + &
+            result%sapwood_to_heartwood_turnover - result%heartwood_turnover_loss
+
+         carbon_storage = storage_after_allocation - result%storage_turnover_loss
          result%carbon_storage_after = carbon_storage
+
+         result%total_sapwood_to_heartwood = result%sapwood_to_heartwood + &
+            result%sapwood_to_heartwood_turnover
+
+         result%turnover_carbon_loss = result%leaf_turnover_loss + &
+            result%root_turnover_loss + result%storage_turnover_loss + &
+            result%heartwood_turnover_loss
 
          ! For gradual allocation, height is computed from total stem carbon and
          ! height-diameter allometry. This avoids forcing the pipe model to be
@@ -735,7 +810,8 @@ module carbon_allocation_offline_kernel
          ! lower bound, minus the carbon allocated to structure.
          result%storage_balance_error = result%carbon_storage_after - &
             (result%carbon_storage_before + result%npp_daily + &
-             result%unmet_storage_deficit - result%carbon_to_allocate)
+             result%unmet_storage_deficit - result%carbon_to_allocate - &
+             result%storage_turnover_loss)
 
          ! Whole-plant carbon accounting: structural + storage carbon should
          ! change by NPP, except for the part of the negative-NPP deficit that
@@ -750,7 +826,8 @@ module carbon_allocation_offline_kernel
          whole_carbon_after = structural_carbon_after + result%carbon_storage_after
 
          result%whole_plant_balance_error = (whole_carbon_after - whole_carbon_before) - &
-            (result%npp_daily + result%unmet_storage_deficit)
+            (result%npp_daily + result%unpaid_carbon_deficit - &
+             result%turnover_carbon_loss)
 
          result%carbon_accounting_ok = &
             abs(result%structural_balance_error) <= carbon_accounting_tolerance .and. &
@@ -770,7 +847,7 @@ module carbon_allocation_offline_kernel
          result%pipe_model_residual = leaf_area_new - params%latosa * sapwood_area_from_mass
          result%allocation_residual_final = 0.0_real64
 
-         result%message = "Gradual storage allocation used with starvation loss from living tissues."
+         result%message = "Gradual storage allocation used with starvation and turnover."
 
       end subroutine allocate_gradual_with_storage
 
