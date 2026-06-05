@@ -1,0 +1,782 @@
+---
+title: "analysing_sensitivity_results_module_offline"
+author: "BiancaRius"
+date: "2026-06-05"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+# Load packages
+library(dplyr)
+library(readr)
+library(ggplot2)
+
+# Define base directory
+base_dir <- "~/Desktop/CAETE-DVM-alloc-allom-including_alloc2_Cm2/carbon_allocation_review/"
+
+```
+
+Step 1: Check if the text is numerically trustable
+- Before interpreting biology, you need to check
+if the code ran without any error
+- Here you have to see: status: PASS & failure_reason: OK (it means it is numerically viable)
+```{r}
+# Read the scenario-level summary file
+summary_df <- read_csv(
+  file.path(base_dir, "storage_allocation_sensitivity_summary_turnover.csv"),
+  show_col_types = FALSE
+)
+
+# Check the number of rows and columns
+dim(summary_df)
+
+# Check numerical status
+summary_df %>%
+  count(status, failure_reason)
+```
+
+Step 2:  Summarise main outcomes by NPP level
+NPP < 0:
+storage should reach zero;
+starvation should appear;
+live biomass should decrease.
+
+NPP = 0:
+no new carbon;
+turnover should reduce live biomass; ideally, starvation should not appear if NPP = 0 is not treated as a deficit.
+
+Low positive NPP:
+some recovery or minor decline;
+storage should not explode.
+
+High NPP:
+live biomass should increase;
+storage should not become greater than live biomass.
+
+if mean_storage_frac_living > 1, storage > living biomass. The problem here isn't numerical. It's conceptual: the model lacks a suitable destination for excess carbon.
+```{r}
+# Summarise main outcomes by NPP level
+summary_by_npp <- summary_df %>%
+  group_by(npp_rate) %>%
+  summarise(
+    n_scenarios = n(),
+    n_pass = sum(status == "PASS"),
+
+    mean_final_living = mean(final_living_carbon, na.rm = TRUE),
+    mean_living_change = mean(net_living_carbon_change, na.rm = TRUE),
+
+    mean_final_storage = mean(final_storage, na.rm = TRUE),
+    mean_storage_frac_living = mean(final_storage_fraction_living, na.rm = TRUE),
+    max_storage_frac_living = max(final_storage_fraction_living, na.rm = TRUE),
+
+    mean_structural_allocation = mean(cumulative_structural_allocation, na.rm = TRUE),
+    mean_structural_fraction = mean(structural_fraction_of_positive_npp, na.rm = TRUE),
+
+    mean_turnover_loss = mean(cumulative_turnover_carbon_loss, na.rm = TRUE),
+    mean_starvation_loss = mean(cumulative_starvation_carbon_loss, na.rm = TRUE),
+    mean_unpaid_deficit = mean(cumulative_unpaid_carbon_deficit, na.rm = TRUE),
+    mean_days_with_starvation = mean(days_with_unmet_storage_deficit, na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+print(summary_by_npp)
+```
+Step 3:  Check if background demand helps transforming storage in biomass
+background_mode = 1:
+    background demand ON
+
+background_mode = 2:
+    background demand OFF
+    
+if background_mode = 1 shows:
+    largest structural_allocation
+    smallest final_storage
+    biggest final_living_carbon
+    smallest storage_fraction_living
+
+so the background demand is working as a structural sink.
+```{r}
+# Summarise the effect of background demand
+summary_by_background <- summary_df %>%
+  group_by(npp_rate, background_mode) %>%
+  summarise(
+    n_scenarios = n(),
+
+    mean_final_living = mean(final_living_carbon, na.rm = TRUE),
+    mean_living_change = mean(net_living_carbon_change, na.rm = TRUE),
+
+    mean_final_storage = mean(final_storage, na.rm = TRUE),
+    mean_storage_frac_living = mean(final_storage_fraction_living, na.rm = TRUE),
+    max_storage_frac_living = max(final_storage_fraction_living, na.rm = TRUE),
+
+    mean_structural_allocation = mean(cumulative_structural_allocation, na.rm = TRUE),
+    mean_structural_fraction = mean(structural_fraction_of_positive_npp, na.rm = TRUE),
+
+    mean_turnover_loss = mean(cumulative_turnover_carbon_loss, na.rm = TRUE),
+    mean_starvation_loss = mean(cumulative_starvation_carbon_loss, na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+print(summary_by_background)
+```
+From this table we can see it is better with the demand ON but it is not perfect
+
+Step 4:  Evaluate structural use of positive NPP (how much of the NPP turned into structure?)
+```{r}
+# Evaluate structural use of positive NPP
+allocation_use <- summary_df %>%
+  group_by(npp_rate, background_mode, max_allocation_fraction) %>%
+  summarise(
+    n_scenarios = n(),
+
+    mean_positive_npp = mean(cumulative_positive_npp, na.rm = TRUE),
+    mean_structural_allocation = mean(cumulative_structural_allocation, na.rm = TRUE),
+    mean_structural_fraction = mean(structural_fraction_of_positive_npp, na.rm = TRUE),
+
+    mean_final_storage = mean(final_storage, na.rm = TRUE),
+    mean_storage_frac_living = mean(final_storage_fraction_living, na.rm = TRUE),
+
+    mean_final_living = mean(final_living_carbon, na.rm = TRUE),
+    mean_living_change = mean(net_living_carbon_change, na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+print(allocation_use)
+```
+
+Sim. Essa tabela é **muito útil** para avaliar se a alocação estrutural está fazendo sentido.
+
+Ela responde principalmente esta pergunta:
+
+```text
+Quando há carbono disponível, quanto dele está virando tecido estrutural
+e quanto está ficando parado no storage?
+```
+
+Aqui, a variável mais importante é:
+
+```r
+mean_structural_fraction
+```
+
+que é aproximadamente:
+
+```text
+cumulative_structural_allocation / cumulative_positive_npp
+```
+
+Mas cuidado: para `npp_rate <= 0`, essa fração não é interpretável, porque `mean_positive_npp = 0`.
+
+---
+
+# 1. Primeiro: ignore `mean_structural_fraction` quando NPP <= 0
+
+Para `npp_rate = -0.5` e `npp_rate = 0.0`, você tem:
+
+```text
+mean_positive_npp = 0
+mean_structural_fraction = 0
+```
+
+Isso **não quer dizer que não houve alocação**. Quer dizer apenas que não houve NPP positiva para usar como denominador.
+
+Mesmo assim, existe alguma `mean_structural_allocation`, por exemplo:
+
+```text
+NPP = -0.5, background 1: structural allocation ≈ 1.60
+NPP = 0.0, background 1: structural allocation ≈ 1.83
+```
+
+Isso provavelmente vem do uso de **storage inicial** em alguns cenários, porque sua tabela agrupa os três níveis de `initial_storage`: 0, 0.5 e 5.
+
+Então, para NPP negativa e zero, a pergunta não é “qual fração da NPP virou estrutura?”, mas sim:
+
+```text
+A planta consome storage, perde biomassa viva e evita storage artificial?
+```
+
+E aqui a resposta geral parece coerente:
+
+```text
+NPP -0.5:
+    final_storage = 0
+    living_change ≈ -8.7
+    planta perde biomassa viva
+
+NPP 0:
+    final_storage ≈ 0 ou muito baixo
+    living_change ≈ -7.1
+    turnover reduz biomassa viva
+```
+
+Isso está ok.
+
+---
+
+# 2. NPP = 0.5: NPP positiva baixa ainda não sustenta a planta
+
+Linhas 13–18:
+
+```text
+NPP = 0.5
+mean_positive_npp = 5
+```
+
+Com `background_mode = 1`:
+
+```text
+mean_structural_allocation = 6.83
+mean_structural_fraction = 1.37
+mean_final_storage = 0
+mean_living_change = -4.63
+```
+
+Com `background_mode = 2`:
+
+```text
+mean_structural_allocation = 5.25
+mean_structural_fraction = 1.05
+mean_final_storage = 1.59
+mean_storage_frac_living = 0.30
+mean_living_change = -5.73
+```
+
+Interpretação:
+
+```text
+Mesmo com NPP positiva baixa, a biomassa viva ainda cai.
+```
+
+Isso não é necessariamente erro, porque o turnover acumulado pode ser maior que o ganho estrutural líquido.
+
+Mas tem um detalhe importante:
+
+```text
+mean_structural_fraction > 1
+```
+
+Isso significa que a alocação estrutural acumulada foi maior que a NPP positiva acumulada. Isso só é possível porque alguns cenários usaram **storage inicial** além da NPP.
+
+Então para NPP = 0.5:
+
+```text
+background ligado:
+    usa mais carbono para estrutura
+    storage final vai a zero
+    biomassa viva ainda cai
+
+background desligado:
+    usa menos carbono para estrutura
+    deixa mais carbono em storage
+    biomassa viva cai mais
+```
+
+Conclusão:
+
+```text
+NPP = 0.5 é insuficiente para compensar turnover e manter crescimento líquido.
+```
+
+---
+
+# 3. NPP = 3.5: esse é o melhor caso para avaliar a alocação
+
+Linhas 19–24.
+
+Aqui `mean_positive_npp = 35`, então a fração estrutural é bem interpretável.
+
+## Background ligado
+
+```text
+background_mode = 1
+mean_structural_allocation ≈ 33.62
+mean_structural_fraction ≈ 0.96
+mean_final_storage ≈ 3.21
+mean_storage_frac_living ≈ 0.216
+mean_final_living ≈ 27.46–27.50
+mean_living_change ≈ +11.5
+```
+
+Isso é o comportamento mais plausível da tabela.
+
+Interpretação:
+
+```text
+Com NPP moderada e background demand ligado,
+quase toda a NPP positiva vira crescimento estrutural.
+A biomassa viva aumenta.
+O storage fica moderado.
+```
+
+Eu diria que esse bloco é um **bom sinal** para o esquema de alocação.
+
+## Background desligado
+
+```text
+background_mode = 2
+mean_structural_allocation ≈ 10.2
+mean_structural_fraction ≈ 0.29
+mean_final_storage ≈ 26.6
+mean_storage_frac_living ≈ 3.5
+mean_final_living ≈ 12.0
+mean_living_change ≈ -4.0
+```
+
+Isso é ruim.
+
+Interpretação:
+
+```text
+Com background demand desligado,
+a planta recebe carbono,
+mas não usa esse carbono para crescimento estrutural suficiente.
+O storage acumula muito.
+A biomassa viva ainda cai.
+```
+
+Esse é um diagnóstico forte:
+
+```text
+sem background demand, o modelo não cria sink estrutural suficiente.
+```
+
+---
+
+# 4. NPP = 8.0: crescimento existe, mas storage fica excessivo
+
+Linhas 25–30.
+
+## Background ligado
+
+```text
+background_mode = 1
+mean_positive_npp = 80
+mean_structural_allocation ≈ 55–57
+mean_structural_fraction ≈ 0.69–0.72
+mean_final_storage ≈ 24–26
+mean_storage_frac_living ≈ 1.13–1.19
+mean_final_living ≈ 42–43.5
+mean_living_change ≈ +26–27.6
+```
+
+Isso é parcialmente bom e parcialmente problemático.
+
+Bom:
+
+```text
+a biomassa viva aumenta bastante
+boa parte da NPP vira estrutura
+```
+
+Problemático:
+
+```text
+storage final fica maior que a biomassa viva
+```
+
+`mean_storage_frac_living ≈ 1.13–1.19` significa:
+
+```text
+storage médio final = 113% a 119% da biomassa viva
+```
+
+Isso parece alto demais para um pool de reserva.
+
+Então a conclusão é:
+
+```text
+background demand melhora muito a alocação,
+mas em NPP muito alta ainda falta um destino para o excesso de carbono.
+```
+
+Esse é justamente o caso que aponta para `storage capacity + spillover`.
+
+## Background desligado
+
+```text
+background_mode = 2
+mean_structural_allocation ≈ 11
+mean_structural_fraction ≈ 0.14
+mean_final_storage ≈ 70
+mean_storage_frac_living ≈ 8.6
+mean_living_change ≈ -3.6 a -3.8
+```
+
+Isso é claramente ruim.
+
+Interpretação:
+
+```text
+A planta recebe muita NPP,
+mas quase tudo fica acumulado em storage.
+A biomassa viva ainda diminui.
+```
+
+Esse comportamento não faz sentido biologicamente para NPP = 8.
+
+---
+
+# 5. O que essa tabela diz sobre `max_allocation_fraction`
+
+Esse é um resultado importante: `max_allocation_fraction` quase não muda nada.
+
+Compare dentro de cada grupo:
+
+```text
+0.001
+0.005
+0.020
+```
+
+Em muitos casos, os resultados são quase idênticos.
+
+Exemplo NPP = 3.5, background 1:
+
+```text
+0.001 → structural_fraction = 0.9605711
+0.005 → structural_fraction = 0.9606259
+0.020 → structural_fraction = 0.9606259
+```
+
+Praticamente igual.
+
+Exemplo NPP = 8.0, background 1:
+
+```text
+0.001 → structural_fraction = 0.693
+0.005 → structural_fraction = 0.718
+0.020 → structural_fraction = 0.719
+```
+
+Aqui aumentar de `0.001` para `0.005` ajuda um pouco, mas aumentar de `0.005` para `0.020` quase não muda.
+
+Conclusão:
+
+```text
+O problema principal não parece ser o limite diário max_allocation_fraction.
+```
+
+Ou pelo menos:
+
+```text
+0.005 já é suficiente para quase todos os casos.
+```
+
+O gargalo maior parece ser:
+
+```text
+a existência ou não de background demand
+```
+
+e, em NPP alta:
+
+```text
+a falta de uma capacidade máxima de storage/spillover.
+```
+
+---
+
+# 6. Minha leitura geral da tabela
+
+Eu resumiria assim:
+
+```text
+1. Com NPP negativa:
+   a planta perde biomassa viva e storage zera.
+   Isso é esperado.
+
+2. Com NPP zero:
+   a planta perde biomassa viva por turnover.
+   Isso também é esperado.
+
+3. Com NPP baixa positiva:
+   a planta ainda perde biomassa viva.
+   NPP = 0.5 não compensa turnover e demandas estruturais.
+
+4. Com NPP moderada:
+   background demand ligado gera comportamento plausível:
+   muita NPP vira estrutura, biomassa viva aumenta e storage fica moderado.
+
+5. Com background demand desligado:
+   a alocação estrutural é fraca, o storage acumula e a biomassa viva cai.
+   Isso sugere que o modelo precisa de algum sink estrutural basal.
+
+6. Com NPP muito alta:
+   background demand ligado permite crescimento,
+   mas storage ainda fica alto demais.
+
+7. max_allocation_fraction não é o principal controlador.
+```
+
+---
+
+# 7. Diagnóstico central
+
+A tabela mostra duas coisas ao mesmo tempo:
+
+## Resultado bom
+
+```text
+O background demand é necessário para transformar carbono disponível em crescimento estrutural.
+```
+
+Sem ele, o modelo deixa carbono parado no storage.
+
+## Problema restante
+
+```text
+Mesmo com background demand, NPP muito alta ainda gera storage excessivo.
+```
+
+Então o próximo mecanismo a testar não deveria ser simplesmente mexer em `max_allocation_fraction`.
+
+Eu diria que a conclusão mais forte é:
+
+```text
+O esquema atual funciona razoavelmente para NPP moderada com background demand ligado,
+mas precisa de uma regra de capacidade máxima de storage para lidar com excesso de carbono.
+```
+
+---
+
+# 8. O que eu escreveria como interpretação curta
+
+Você poderia anotar assim:
+
+```text
+The sensitivity analysis indicates that structural allocation is strongly controlled by the presence of background demand. Under moderate positive NPP (3.5), enabling background demand allowed approximately 96% of positive NPP to be allocated to structural growth, increased living biomass, and kept final storage relatively low. In contrast, when background demand was disabled, only about 29% of positive NPP was allocated structurally, storage accumulated to more than three times living biomass, and living biomass declined.
+
+Under high NPP (8.0), background demand still promoted substantial growth, but storage remained excessive, reaching values greater than living biomass. This suggests that background demand improves carbon use but is not sufficient to prevent unrealistic storage accumulation under high carbon availability. The daily allocation cap had only a minor effect, indicating that the main limitation is not the allocation cap but the absence of a storage capacity or spillover mechanism.
+```
+
+Em português, a ideia é:
+
+```text
+A alocação faz sentido em NPP moderada quando background demand está ligado.
+Sem background demand, o modelo não usa carbono suficiente para estrutura.
+Em NPP alta, mesmo com background demand, ainda há excesso de storage.
+```
+____________________________________
+Step 5: Check the residuals
+- Residuals tell you if the plant ended close to the allometric relations
+
+```{r}
+# Summarise final allometric residuals
+residual_diagnostics <- summary_df %>%
+  group_by(npp_rate, background_mode) %>%
+  summarise(
+    n_scenarios = n(),
+
+    mean_leaf_root_residual = mean(final_leaf_root_residual, na.rm = TRUE),
+    mean_abs_leaf_root_residual = mean(abs(final_leaf_root_residual), na.rm = TRUE),
+    max_abs_leaf_root_residual = max(abs(final_leaf_root_residual), na.rm = TRUE),
+
+    mean_pipe_residual = mean(final_pipe_residual, na.rm = TRUE),
+    mean_abs_pipe_residual = mean(abs(final_pipe_residual), na.rm = TRUE),
+    max_abs_pipe_residual = max(abs(final_pipe_residual), na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+# filter for background demand = 1
+residual_diagnostics %>% filter(background_mode == 1)
+print(residual_diagnostics)
+
+
+```
+We can see there are large pipe-model residuals, it means the sapwood is not in equilibrium with leaf and roots. Now let's try to identify in which scenarios it is worst
+```{r}
+# Identify scenarios with the largest pipe-model residuals
+pipe_model_residuals <- summary_df %>%
+  mutate(abs_pipe_residual = abs(final_pipe_residual)) %>%
+  arrange(desc(abs_pipe_residual)) %>%
+  select(
+    scenario_id,
+    trait_case,
+    state_case,
+    background_mode,
+    npp_rate,
+    initial_storage,
+    allometric_adjustment_days,
+    max_allocation_fraction,
+    final_leaf,
+    final_root,
+    final_sapwood,
+    final_heartwood,
+    final_storage,
+    final_living_carbon,
+    final_pipe_residual,
+    final_leaf_root_residual,
+    final_storage_fraction_living,
+    structural_fraction_of_positive_npp
+  ) %>%
+  head(20)
+
+# Calculate relative residuals (because only absolute residuals doesnt say if the number is big or not because it depends on the plant's size)
+# Add trait-specific SLA values used in the sensitivity test
+relative_resid <- summary_df %>%
+  mutate(
+    sla = case_when(
+      trait_case == 1 ~ 12,
+      trait_case == 2 ~ 6,
+      trait_case == 3 ~ 24,
+      trait_case == 4 ~ 12,
+      TRUE ~ NA_real_
+    ),
+
+    # Leaf area represented by final leaf carbon
+    final_leaf_area = final_leaf * sla,
+
+    # Sapwood-supported leaf area inferred from:
+    # pipe_residual = leaf_area - supported_leaf_area
+    supported_leaf_area = final_leaf_area - final_pipe_residual,
+
+    # Relative pipe residual
+    relative_pipe_residual = final_pipe_residual /
+      pmax(abs(final_leaf_area), abs(supported_leaf_area), 1e-12),
+
+    abs_relative_pipe_residual = abs(relative_pipe_residual)
+  )
+
+# Summarise relative residuals
+relative_resid %>%
+  group_by(npp_rate, background_mode) %>%
+  summarise(
+    n_scenarios = n(),
+    mean_relative_pipe_residual = mean(relative_pipe_residual, na.rm = TRUE),
+    mean_abs_relative_pipe_residual = mean(abs_relative_pipe_residual, na.rm = TRUE),
+    max_abs_relative_pipe_residual = max(abs_relative_pipe_residual, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Keep scenarios where the plant still has functional leaf and root pools
+functional_scenarios <- summary_df %>%
+  filter(
+    final_leaf > 1e-6,
+    final_root > 1e-6
+  )
+
+# Residual diagnostics for functional scenarios only
+functional_residuals <- functional_scenarios %>%
+  group_by(npp_rate, background_mode) %>%
+  summarise(
+    n_scenarios = n(),
+
+    mean_abs_leaf_root_residual = mean(abs(final_leaf_root_residual), na.rm = TRUE),
+    max_abs_leaf_root_residual = max(abs(final_leaf_root_residual), na.rm = TRUE),
+
+    mean_pipe_residual = mean(final_pipe_residual, na.rm = TRUE),
+    mean_abs_pipe_residual = mean(abs(final_pipe_residual), na.rm = TRUE),
+    max_abs_pipe_residual = max(abs(final_pipe_residual), na.rm = TRUE),
+
+    mean_final_storage = mean(final_storage, na.rm = TRUE),
+    mean_storage_frac_living = mean(final_storage_fraction_living, na.rm = TRUE),
+    mean_structural_fraction = mean(structural_fraction_of_positive_npp, na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+print(functional_residuals)
+
+```
+The sensitivity analysis suggests that the allocation scheme performs best under **moderate positive NPP when background demand is enabled**. In this condition (`NPP = 3.5`, `background_mode = 1`), most of the positive NPP is allocated to structural growth (`mean_structural_fraction ≈ 0.96`), final storage remains moderate (`storage/living carbon ≈ 0.22`), and the pipe-model residual is close to zero. This indicates that the plant is able to convert available carbon into structural biomass while maintaining a relatively coherent leaf–sapwood balance.
+
+The leaf–root balance is well maintained across almost all scenarios, as shown by very small leaf–root residuals. Therefore, the main allocation issue is not the partitioning between leaves and roots, but rather the balance between leaf biomass and sapwood.
+
+When NPP is zero or very low, pipe residuals are strongly negative, indicating excess sapwood relative to leaf biomass. This is likely a consequence of limited carbon availability: leaf and root pools decline through turnover and/or starvation, while sapwood persists longer. Under these conditions, the residuals reflect functional decline rather than a failure of allocation under favorable growth.
+
+When background demand is disabled, the model allocates much less carbon to structural growth. As a result, storage accumulates strongly, structural allocation remains low, and the plant often fails to recover a coherent structure. This indicates that background demand is necessary to provide a structural carbon sink.
+
+Under high NPP (`NPP = 8.0`) with background demand enabled, the plant grows substantially, but storage still becomes excessive and exceeds living biomass. The pipe residual also becomes positive, suggesting that leaf biomass increases faster than sapwood support. This indicates that background demand improves allocation, but is not sufficient to prevent unrealistic storage accumulation under high carbon availability.
+
+Overall, the current scheme appears plausible under moderate NPP with background demand, but it still requires an additional mechanism to handle excess carbon under high NPP, such as a storage capacity limit and/or a spillover mechanism, likely favoring sapwood or woody growth rather than additional leaf growth.
+
+_____________________________________
+
+Creating the Plots
+1. Storage relative to live biomass
+```{r}
+# Plot final storage relative to living biomass
+ggplot(summary_df, aes(x = factor(npp_rate), y = final_storage_fraction_living)) +
+  geom_boxplot() +
+  facet_wrap(~ background_mode) +
+  theme_bw() +
+  labs(
+    x = "NPP rate",
+    y = "Final storage / living carbon",
+    title = "Storage accumulation across NPP levels and background-demand modes"
+  )
+```
+
+2. FRaction of NPP used in structure
+```{r}
+# Plot the fraction of positive NPP allocated to structure
+ggplot(summary_df, aes(x = factor(npp_rate), y = structural_fraction_of_positive_npp)) +
+  geom_boxplot() +
+  facet_wrap(~ background_mode) +
+  theme_bw() +
+  labs(
+    x = "NPP rate",
+    y = "Structural allocation / positive NPP",
+    title = "Fraction of positive NPP allocated to structural growth"
+  )
+```
+3. Pipe residual
+```{r}
+# Plot final pipe residual across NPP and background mode
+ggplot(summary_df, aes(x = factor(npp_rate), y = final_pipe_residual)) +
+  geom_boxplot() +
+  facet_wrap(~ background_mode) +
+  theme_bw() +
+  labs(
+    x = "NPP rate",
+    y = "Final pipe residual",
+    title = "Final pipe-model residual across NPP levels"
+  )
+```
+4. Leaf-root residual
+```{r}
+# Plot final leaf-root residual across NPP and background mode
+ggplot(summary_df, aes(x = factor(npp_rate), y = final_leaf_root_residual)) +
+  geom_boxplot() +
+  facet_wrap(~ background_mode) +
+  theme_bw() +
+  labs(
+    x = "NPP rate",
+    y = "Final leaf-root residual",
+    title = "Final leaf-root residual across NPP levels"
+  )
+```
+
+
+1. Tudo PASS?
+   Sim → posso interpretar.
+
+2. NPP negativa causa starvation?
+   Sim → resposta ao déficit está funcionando.
+
+3. NPP zero causa perda por turnover?
+   Sim → turnover está funcionando.
+
+4. NPP positiva aumenta biomassa viva?
+   Sim → crescimento estrutural existe.
+
+5. NPP alta causa storage enorme?
+   Sim → falta destino para carbono excedente.
+
+6. Background demand reduz storage?
+   Sim → ele atua como sink estrutural.
+
+7. Residuals melhoram com NPP positiva?
+   Sim → alocação está corrigindo parcialmente a estrutura.
+
+8. Residuals continuam ruins apesar de storage alto?
+   Sim → carbono existe, mas não está sendo usado de forma adequada para corrigir a estrutura.
