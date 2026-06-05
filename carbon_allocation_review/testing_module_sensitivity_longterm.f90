@@ -14,7 +14,6 @@ program test_storage_allocation_sensitivity
   integer, parameter :: n_storage = 3
   integer, parameter :: n_adjustment = 3
   integer, parameter :: n_max_fraction = 3
-  integer, parameter :: n_background = 2
   integer, parameter :: n_trait_case = 4
   integer, parameter :: n_state_case = 5
 
@@ -29,7 +28,6 @@ program test_storage_allocation_sensitivity
      ! Scenario factors.
      integer :: trait_case = 0
      integer :: state_case = 0
-     integer :: background_mode = 0
      real(real64) :: npp_rate = 0.0_real64
      real(real64) :: initial_storage = 0.0_real64
      real(real64) :: allometric_adjustment_days = 0.0_real64
@@ -54,6 +52,9 @@ program test_storage_allocation_sensitivity
      real(real64) :: cumulative_npp = 0.0_real64
      real(real64) :: cumulative_structural_allocation = 0.0_real64
      real(real64) :: cumulative_unmet_storage_deficit = 0.0_real64
+     real(real64) :: cumulative_starvation_carbon_loss = 0.0_real64
+     real(real64) :: cumulative_sapwood_to_heartwood = 0.0_real64
+     real(real64) :: cumulative_unpaid_carbon_deficit = 0.0_real64
 
      ! Diagnostic metrics.
      real(real64) :: final_leaf_root_residual = 0.0_real64
@@ -81,7 +82,6 @@ program test_storage_allocation_sensitivity
   integer :: i_storage
   integer :: i_adjustment
   integer :: i_max_fraction
-  integer :: i_background
   integer :: i_trait_case
   integer :: i_state_case
   integer :: scenario_id
@@ -116,38 +116,35 @@ program test_storage_allocation_sensitivity
 
   do i_trait_case = 1, n_trait_case
      do i_state_case = 1, n_state_case
-        do i_background = 1, n_background
-           do i_max_fraction = 1, n_max_fraction
-              do i_adjustment = 1, n_adjustment
-                 do i_storage = 1, n_storage
-                    do i_npp = 1, n_npp
+         do i_max_fraction = 1, n_max_fraction
+            do i_adjustment = 1, n_adjustment
+               do i_storage = 1, n_storage
+                  do i_npp = 1, n_npp
 
-                       scenario_id = scenario_id + 1
+                     scenario_id = scenario_id + 1
 
-                       call initialize_parameters(params, i_trait_case)
-                       call initialize_controls(controls, adjustment_values(i_adjustment), &
-                                                max_fraction_values(i_max_fraction), &
-                                                i_background)
-                       call initialize_state(params, i_state_case, initial_state)
+                     call initialize_parameters(params, i_trait_case)
+                     call initialize_controls(controls, adjustment_values(i_adjustment), &
+                                             max_fraction_values(i_max_fraction))
+                     call initialize_state(params, i_state_case, initial_state)
 
-                       call run_scenario(scenario_id, params, controls, initial_state, &
-                                         npp_values(i_npp), storage_values(i_storage), &
-                                         i_trait_case, i_state_case, i_background, &
-                                         checkpoint_unit, summary)
+                     call run_scenario(scenario_id, params, controls, initial_state, &
+                                       npp_values(i_npp), storage_values(i_storage), &
+                                       i_trait_case, i_state_case, &
+                                       checkpoint_unit, summary)
 
-                       call write_csv_row(csv_unit, summary)
+                     call write_csv_row(csv_unit, summary)
 
-                       if (summary%passed) then
-                          n_pass = n_pass + 1
-                       else
-                          n_fail = n_fail + 1
-                       end if
+                     if (summary%passed) then
+                        n_pass = n_pass + 1
+                     else
+                        n_fail = n_fail + 1
+                     end if
 
-                    end do
-                 end do
-              end do
-           end do
-        end do
+                  end do
+               end do
+            end do
+         end do
      end do
   end do
 
@@ -199,31 +196,19 @@ contains
   end subroutine initialize_parameters
 
 
-  subroutine initialize_controls(controls, adjustment_days, max_fraction, background_mode)
+  subroutine initialize_controls(controls, adjustment_days, max_fraction)
 
     type(ControlsParam), intent(out) :: controls
     real(real64), intent(in) :: adjustment_days
     real(real64), intent(in) :: max_fraction
-    integer, intent(in) :: background_mode
 
     controls%dt_years = 1.0_real64 / 365.0_real64
     controls%allometric_adjustment_days = adjustment_days
     controls%max_allocation_fraction = max_fraction
 
-    if (background_mode == 1) then
-       ! Background balanced-growth demand enabled.
-       controls%leaf_background_timescale_years = 3.0_real64
-       controls%root_background_timescale_years = 3.0_real64
-       controls%sapwood_background_timescale_years = 15.0_real64
-    else if (background_mode == 2) then
-       ! Background balanced-growth demand disabled. Allocation then depends only
-       ! on explicit allometric correction deficits.
-       controls%leaf_background_timescale_years = 0.0_real64
-       controls%root_background_timescale_years = 0.0_real64
-       controls%sapwood_background_timescale_years = 0.0_real64
-    else
-       error stop "Unknown background mode."
-    end if
+   controls%leaf_background_timescale_years = 3.0_real64
+   controls%root_background_timescale_years = 3.0_real64
+   controls%sapwood_background_timescale_years = 15.0_real64
 
   end subroutine initialize_controls
 
@@ -305,7 +290,7 @@ contains
 
 
   subroutine run_scenario(scenario_id, params, controls, initial_state, npp_rate, &
-                          initial_storage, trait_case, state_case, background_mode, &
+                          initial_storage, trait_case, state_case, &
                           checkpoint_unit, summary)
 
     integer, intent(in) :: scenario_id
@@ -316,7 +301,6 @@ contains
     real(real64), intent(in) :: initial_storage
     integer, intent(in) :: trait_case
     integer, intent(in) :: state_case
-    integer, intent(in) :: background_mode
     integer, intent(in) :: checkpoint_unit
     type(ScenarioSummary), intent(out) :: summary
 
@@ -328,8 +312,7 @@ contains
     integer :: day
 
     call initialize_summary(summary, scenario_id, params, controls, initial_state, &
-                            npp_rate, initial_storage, trait_case, state_case, &
-                            background_mode)
+                            npp_rate, initial_storage, trait_case, state_case)
 
     state = initial_state
     carbon_storage = initial_storage
@@ -360,6 +343,12 @@ contains
                                                   result%carbon_to_allocate
        summary%cumulative_unmet_storage_deficit = summary%cumulative_unmet_storage_deficit + &
                                                   result%unmet_storage_deficit
+       summary%cumulative_starvation_carbon_loss = summary%cumulative_starvation_carbon_loss + &
+                                                  result%starvation_carbon_loss
+       summary%cumulative_sapwood_to_heartwood = summary%cumulative_sapwood_to_heartwood + &
+                                                result%sapwood_to_heartwood
+       summary%cumulative_unpaid_carbon_deficit = summary%cumulative_unpaid_carbon_deficit + &
+                                                 result%unpaid_carbon_deficit
 
        if (result%carbon_to_allocate > tiny_positive) then
           summary%days_with_allocation = summary%days_with_allocation + 1
@@ -408,8 +397,7 @@ contains
 
 
   subroutine initialize_summary(summary, scenario_id, params, controls, initial_state, &
-                                npp_rate, initial_storage, trait_case, state_case, &
-                                background_mode)
+                                npp_rate, initial_storage, trait_case, state_case)
 
     type(ScenarioSummary), intent(out) :: summary
     integer, intent(in) :: scenario_id
@@ -420,7 +408,6 @@ contains
     real(real64), intent(in) :: initial_storage
     integer, intent(in) :: trait_case
     integer, intent(in) :: state_case
-    integer, intent(in) :: background_mode
 
     summary%scenario_id = scenario_id
     summary%passed = .true.
@@ -429,7 +416,6 @@ contains
 
     summary%trait_case = trait_case
     summary%state_case = state_case
-    summary%background_mode = background_mode
     summary%npp_rate = npp_rate
     summary%initial_storage = initial_storage
     summary%allometric_adjustment_days = controls%allometric_adjustment_days
@@ -451,6 +437,9 @@ contains
     summary%cumulative_npp = 0.0_real64
     summary%cumulative_structural_allocation = 0.0_real64
     summary%cumulative_unmet_storage_deficit = 0.0_real64
+    summary%cumulative_starvation_carbon_loss = 0.0_real64
+    summary%cumulative_sapwood_to_heartwood = 0.0_real64
+    summary%cumulative_unpaid_carbon_deficit = 0.0_real64
 
     summary%final_leaf_root_residual = leaf_root_residual_for_state(params, initial_state)
     summary%final_pipe_residual = pipe_residual_for_state(params, initial_state)
@@ -561,6 +550,17 @@ contains
        return
     end if
 
+    if (result%leaf_starvation_loss < -tol .or. &
+        result%root_starvation_loss < -tol .or. &
+        result%sapwood_starvation_loss < -tol .or. &
+        result%sapwood_to_heartwood < -tol .or. &
+        result%starvation_carbon_loss < -tol .or. &
+        result%unpaid_carbon_deficit < -tol) then
+       is_valid = .false.
+       failure_reason = "Negative starvation diagnostic"
+       return
+    end if
+
     if (abs(result%structural_balance_error) > tol) then
        is_valid = .false.
        failure_reason = "Structural balance error"
@@ -624,6 +624,12 @@ contains
                 ieee_is_finite(result%carbon_storage_after) .and. &
                 ieee_is_finite(result%carbon_to_allocate) .and. &
                 ieee_is_finite(result%total_demand_daily) .and. &
+                ieee_is_finite(result%leaf_starvation_loss) .and. &
+                ieee_is_finite(result%root_starvation_loss) .and. &
+                ieee_is_finite(result%sapwood_starvation_loss) .and. &
+                ieee_is_finite(result%sapwood_to_heartwood) .and. &
+                ieee_is_finite(result%starvation_carbon_loss) .and. &
+                ieee_is_finite(result%unpaid_carbon_deficit) .and. &
                 ieee_is_finite(result%structural_balance_error) .and. &
                 ieee_is_finite(result%storage_balance_error) .and. &
                 ieee_is_finite(result%whole_plant_balance_error)
@@ -814,10 +820,12 @@ contains
 
     write(checkpoint_unit,'(a)') &
       "scenario_id,checkpoint_year,checkpoint_day,status,fail_day,failure_reason," // &
-      "trait_case,state_case,background_mode,npp_rate,initial_storage," // &
+      "trait_case,state_case,npp_rate,initial_storage," // &
       "allometric_adjustment_days,max_allocation_fraction," // &
       "leaf,root,sapwood,heartwood,height,storage," // &
       "cumulative_npp,cumulative_structural_allocation,cumulative_unmet_storage_deficit," // &
+      "cumulative_starvation_carbon_loss,cumulative_sapwood_to_heartwood," // &
+      "cumulative_unpaid_carbon_deficit," // &
       "leaf_root_residual,pipe_residual,storage_fraction," // &
       "structural_fraction_of_positive_npp,max_abs_structural_balance_error," // &
       "max_abs_storage_balance_error,max_abs_whole_plant_balance_error," // &
@@ -866,13 +874,16 @@ contains
     write(checkpoint_unit,'(*(g0))') &
       summary%scenario_id, ",", checkpoint_year, ",", day, ",", trim(status), ",", &
       summary%fail_day, ",", trim(summary%failure_reason), ",", &
-      summary%trait_case, ",", summary%state_case, ",", summary%background_mode, ",", &
+      summary%trait_case, ",", summary%state_case, ",", &
       summary%npp_rate, ",", summary%initial_storage, ",", &
       summary%allometric_adjustment_days, ",", summary%max_allocation_fraction, ",", &
       state%leaf_mass, ",", state%root_mass, ",", state%sapwood_mass, ",", &
       state%heartwood_mass, ",", state%height, ",", carbon_storage, ",", &
       summary%cumulative_npp, ",", summary%cumulative_structural_allocation, ",", &
       summary%cumulative_unmet_storage_deficit, ",", &
+      summary%cumulative_starvation_carbon_loss, ",", &
+      summary%cumulative_sapwood_to_heartwood, ",", &
+      summary%cumulative_unpaid_carbon_deficit, ",", &
       current_leaf_root_residual, ",", current_pipe_residual, ",", &
       current_storage_fraction, ",", structural_fraction_at_checkpoint, ",", &
       summary%max_abs_structural_balance_error, ",", &
@@ -889,11 +900,13 @@ contains
     integer, intent(in) :: csv_unit
 
     write(csv_unit,'(a)') &
-      "scenario_id,status,fail_day,failure_reason,trait_case,state_case,background_mode," // &
+      "scenario_id,status,fail_day,failure_reason,trait_case,state_case," // &
       "npp_rate,initial_storage,allometric_adjustment_days,max_allocation_fraction," // &
       "initial_leaf,initial_root,initial_sapwood,initial_heartwood,initial_height," // &
       "final_leaf,final_root,final_sapwood,final_heartwood,final_height,final_storage," // &
       "cumulative_npp,cumulative_structural_allocation,cumulative_unmet_storage_deficit," // &
+      "cumulative_starvation_carbon_loss,cumulative_sapwood_to_heartwood," // &
+      "cumulative_unpaid_carbon_deficit," // &
       "final_leaf_root_residual,final_pipe_residual,final_storage_fraction," // &
       "structural_fraction_of_positive_npp,max_abs_structural_balance_error," // &
       "max_abs_storage_balance_error,max_abs_whole_plant_balance_error," // &
@@ -917,7 +930,7 @@ contains
 
     write(csv_unit,'(*(g0))') &
       summary%scenario_id, ",", trim(status), ",", summary%fail_day, ",", trim(summary%failure_reason), ",", &
-      summary%trait_case, ",", summary%state_case, ",", summary%background_mode, ",", &
+      summary%trait_case, ",", summary%state_case, ",", &
       summary%npp_rate, ",", summary%initial_storage, ",", summary%allometric_adjustment_days, ",", &
       summary%max_allocation_fraction, ",", &
       summary%initial_leaf, ",", summary%initial_root, ",", summary%initial_sapwood, ",", &
@@ -926,6 +939,9 @@ contains
       summary%final_heartwood, ",", summary%final_height, ",", summary%final_storage, ",", &
       summary%cumulative_npp, ",", summary%cumulative_structural_allocation, ",", &
       summary%cumulative_unmet_storage_deficit, ",", &
+      summary%cumulative_starvation_carbon_loss, ",", &
+      summary%cumulative_sapwood_to_heartwood, ",", &
+      summary%cumulative_unpaid_carbon_deficit, ",", &
       summary%final_leaf_root_residual, ",", summary%final_pipe_residual, ",", &
       summary%final_storage_fraction, ",", summary%structural_fraction_of_positive_npp, ",", &
       summary%max_abs_structural_balance_error, ",", summary%max_abs_storage_balance_error, ",", &
