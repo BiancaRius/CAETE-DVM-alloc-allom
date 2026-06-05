@@ -14,6 +14,7 @@ program test_storage_allocation_sensitivity
   integer, parameter :: n_storage = 3
   integer, parameter :: n_adjustment = 3
   integer, parameter :: n_max_fraction = 3
+  integer, parameter :: n_background = 2
   integer, parameter :: n_trait_case = 4
   integer, parameter :: n_state_case = 5
 
@@ -28,6 +29,7 @@ program test_storage_allocation_sensitivity
      ! Scenario factors.
      integer :: trait_case = 0
      integer :: state_case = 0
+     integer :: background_mode = 0
      real(real64) :: npp_rate = 0.0_real64
      real(real64) :: initial_storage = 0.0_real64
      real(real64) :: allometric_adjustment_days = 0.0_real64
@@ -82,6 +84,7 @@ program test_storage_allocation_sensitivity
   integer :: i_storage
   integer :: i_adjustment
   integer :: i_max_fraction
+  integer :: i_background
   integer :: i_trait_case
   integer :: i_state_case
   integer :: scenario_id
@@ -116,35 +119,38 @@ program test_storage_allocation_sensitivity
 
   do i_trait_case = 1, n_trait_case
      do i_state_case = 1, n_state_case
-         do i_max_fraction = 1, n_max_fraction
-            do i_adjustment = 1, n_adjustment
-               do i_storage = 1, n_storage
-                  do i_npp = 1, n_npp
+        do i_background = 1, n_background
+           do i_max_fraction = 1, n_max_fraction
+              do i_adjustment = 1, n_adjustment
+                 do i_storage = 1, n_storage
+                    do i_npp = 1, n_npp
 
-                     scenario_id = scenario_id + 1
+                       scenario_id = scenario_id + 1
 
-                     call initialize_parameters(params, i_trait_case)
-                     call initialize_controls(controls, adjustment_values(i_adjustment), &
-                                             max_fraction_values(i_max_fraction))
-                     call initialize_state(params, i_state_case, initial_state)
+                       call initialize_parameters(params, i_trait_case)
+                       call initialize_controls(controls, adjustment_values(i_adjustment), &
+                                                max_fraction_values(i_max_fraction), &
+                                                i_background)
+                       call initialize_state(params, i_state_case, initial_state)
 
-                     call run_scenario(scenario_id, params, controls, initial_state, &
-                                       npp_values(i_npp), storage_values(i_storage), &
-                                       i_trait_case, i_state_case, &
-                                       checkpoint_unit, summary)
+                       call run_scenario(scenario_id, params, controls, initial_state, &
+                                         npp_values(i_npp), storage_values(i_storage), &
+                                         i_trait_case, i_state_case, i_background, &
+                                         checkpoint_unit, summary)
 
-                     call write_csv_row(csv_unit, summary)
+                       call write_csv_row(csv_unit, summary)
 
-                     if (summary%passed) then
-                        n_pass = n_pass + 1
-                     else
-                        n_fail = n_fail + 1
-                     end if
+                       if (summary%passed) then
+                          n_pass = n_pass + 1
+                       else
+                          n_fail = n_fail + 1
+                       end if
 
-                  end do
-               end do
-            end do
-         end do
+                    end do
+                 end do
+              end do
+           end do
+        end do
      end do
   end do
 
@@ -196,19 +202,31 @@ contains
   end subroutine initialize_parameters
 
 
-  subroutine initialize_controls(controls, adjustment_days, max_fraction)
+  subroutine initialize_controls(controls, adjustment_days, max_fraction, background_mode)
 
     type(ControlsParam), intent(out) :: controls
     real(real64), intent(in) :: adjustment_days
     real(real64), intent(in) :: max_fraction
+    integer, intent(in) :: background_mode
 
     controls%dt_years = 1.0_real64 / 365.0_real64
     controls%allometric_adjustment_days = adjustment_days
     controls%max_allocation_fraction = max_fraction
 
-   controls%leaf_background_timescale_years = 3.0_real64
-   controls%root_background_timescale_years = 3.0_real64
-   controls%sapwood_background_timescale_years = 15.0_real64
+    if (background_mode == 1) then
+       ! Background balanced-growth demand enabled.
+       controls%leaf_background_timescale_years = 3.0_real64
+       controls%root_background_timescale_years = 3.0_real64
+       controls%sapwood_background_timescale_years = 15.0_real64
+    else if (background_mode == 2) then
+       ! Background balanced-growth demand disabled. Allocation then depends only
+       ! on explicit allometric correction deficits.
+       controls%leaf_background_timescale_years = 0.0_real64
+       controls%root_background_timescale_years = 0.0_real64
+       controls%sapwood_background_timescale_years = 0.0_real64
+    else
+       error stop "Unknown background mode."
+    end if
 
   end subroutine initialize_controls
 
@@ -290,7 +308,7 @@ contains
 
 
   subroutine run_scenario(scenario_id, params, controls, initial_state, npp_rate, &
-                          initial_storage, trait_case, state_case, &
+                          initial_storage, trait_case, state_case, background_mode, &
                           checkpoint_unit, summary)
 
     integer, intent(in) :: scenario_id
@@ -301,6 +319,7 @@ contains
     real(real64), intent(in) :: initial_storage
     integer, intent(in) :: trait_case
     integer, intent(in) :: state_case
+    integer, intent(in) :: background_mode
     integer, intent(in) :: checkpoint_unit
     type(ScenarioSummary), intent(out) :: summary
 
@@ -312,7 +331,8 @@ contains
     integer :: day
 
     call initialize_summary(summary, scenario_id, params, controls, initial_state, &
-                            npp_rate, initial_storage, trait_case, state_case)
+                            npp_rate, initial_storage, trait_case, state_case, &
+                            background_mode)
 
     state = initial_state
     carbon_storage = initial_storage
@@ -397,7 +417,8 @@ contains
 
 
   subroutine initialize_summary(summary, scenario_id, params, controls, initial_state, &
-                                npp_rate, initial_storage, trait_case, state_case)
+                                npp_rate, initial_storage, trait_case, state_case, &
+                                background_mode)
 
     type(ScenarioSummary), intent(out) :: summary
     integer, intent(in) :: scenario_id
@@ -408,6 +429,7 @@ contains
     real(real64), intent(in) :: initial_storage
     integer, intent(in) :: trait_case
     integer, intent(in) :: state_case
+    integer, intent(in) :: background_mode
 
     summary%scenario_id = scenario_id
     summary%passed = .true.
@@ -416,6 +438,7 @@ contains
 
     summary%trait_case = trait_case
     summary%state_case = state_case
+    summary%background_mode = background_mode
     summary%npp_rate = npp_rate
     summary%initial_storage = initial_storage
     summary%allometric_adjustment_days = controls%allometric_adjustment_days
@@ -820,7 +843,7 @@ contains
 
     write(checkpoint_unit,'(a)') &
       "scenario_id,checkpoint_year,checkpoint_day,status,fail_day,failure_reason," // &
-      "trait_case,state_case,npp_rate,initial_storage," // &
+      "trait_case,state_case,background_mode,npp_rate,initial_storage," // &
       "allometric_adjustment_days,max_allocation_fraction," // &
       "leaf,root,sapwood,heartwood,height,storage," // &
       "cumulative_npp,cumulative_structural_allocation,cumulative_unmet_storage_deficit," // &
@@ -874,7 +897,7 @@ contains
     write(checkpoint_unit,'(*(g0))') &
       summary%scenario_id, ",", checkpoint_year, ",", day, ",", trim(status), ",", &
       summary%fail_day, ",", trim(summary%failure_reason), ",", &
-      summary%trait_case, ",", summary%state_case, ",", &
+      summary%trait_case, ",", summary%state_case, ",", summary%background_mode, ",", &
       summary%npp_rate, ",", summary%initial_storage, ",", &
       summary%allometric_adjustment_days, ",", summary%max_allocation_fraction, ",", &
       state%leaf_mass, ",", state%root_mass, ",", state%sapwood_mass, ",", &
@@ -900,7 +923,7 @@ contains
     integer, intent(in) :: csv_unit
 
     write(csv_unit,'(a)') &
-      "scenario_id,status,fail_day,failure_reason,trait_case,state_case," // &
+      "scenario_id,status,fail_day,failure_reason,trait_case,state_case,background_mode," // &
       "npp_rate,initial_storage,allometric_adjustment_days,max_allocation_fraction," // &
       "initial_leaf,initial_root,initial_sapwood,initial_heartwood,initial_height," // &
       "final_leaf,final_root,final_sapwood,final_heartwood,final_height,final_storage," // &
@@ -930,7 +953,7 @@ contains
 
     write(csv_unit,'(*(g0))') &
       summary%scenario_id, ",", trim(status), ",", summary%fail_day, ",", trim(summary%failure_reason), ",", &
-      summary%trait_case, ",", summary%state_case, ",", &
+      summary%trait_case, ",", summary%state_case, ",", summary%background_mode, ",", &
       summary%npp_rate, ",", summary%initial_storage, ",", summary%allometric_adjustment_days, ",", &
       summary%max_allocation_fraction, ",", &
       summary%initial_leaf, ",", summary%initial_root, ",", summary%initial_sapwood, ",", &
