@@ -57,6 +57,14 @@ program test_storage_allocation_sensitivity
      real(real64) :: cumulative_starvation_carbon_loss = 0.0_real64
      real(real64) :: cumulative_sapwood_to_heartwood = 0.0_real64
      real(real64) :: cumulative_unpaid_carbon_deficit = 0.0_real64
+     real(real64) :: cumulative_leaf_turnover_loss = 0.0_real64
+     real(real64) :: cumulative_root_turnover_loss = 0.0_real64
+     real(real64) :: cumulative_sapwood_turnover_loss = 0.0_real64
+     real(real64) :: cumulative_storage_turnover_loss = 0.0_real64
+     real(real64) :: cumulative_heartwood_turnover_loss = 0.0_real64
+     real(real64) :: cumulative_sapwood_to_heartwood_turnover = 0.0_real64
+     real(real64) :: cumulative_total_sapwood_to_heartwood = 0.0_real64
+     real(real64) :: cumulative_turnover_carbon_loss = 0.0_real64
 
      ! Diagnostic metrics.
      real(real64) :: final_leaf_root_residual = 0.0_real64
@@ -92,6 +100,7 @@ program test_storage_allocation_sensitivity
   integer :: n_fail
   integer :: csv_unit
   integer :: checkpoint_unit
+  integer :: daily_unit
 
   type(Parameters) :: params
   type(ControlsParam) :: controls
@@ -117,6 +126,11 @@ program test_storage_allocation_sensitivity
 
   call write_checkpoint_header(checkpoint_unit)
 
+  open(newunit=daily_unit, file="storage_allocation_daily_selected.csv", &
+       status="replace", action="write")
+
+  call write_daily_header(daily_unit)
+
   do i_trait_case = 1, n_trait_case
      do i_state_case = 1, n_state_case
         do i_background = 1, n_background
@@ -136,7 +150,7 @@ program test_storage_allocation_sensitivity
                        call run_scenario(scenario_id, params, controls, initial_state, &
                                          npp_values(i_npp), storage_values(i_storage), &
                                          i_trait_case, i_state_case, i_background, &
-                                         checkpoint_unit, summary)
+                                         checkpoint_unit, daily_unit, summary)
 
                        call write_csv_row(csv_unit, summary)
 
@@ -156,12 +170,15 @@ program test_storage_allocation_sensitivity
 
   close(csv_unit)
   close(checkpoint_unit)
+  close(daily_unit)
 
   write(*,'(a,i0)') "Sensitivity scenarios completed: ", scenario_id
   write(*,'(a,i0)') "PASS: ", n_pass
   write(*,'(a,i0)') "FAIL: ", n_fail
   write(*,'(a)') "Output written to storage_allocation_sensitivity_summary.csv"
   write(*,'(a)') "Checkpoint output written to storage_allocation_sensitivity_checkpoints.csv"
+  write(*,'(a)') "Selected daily output written to storage_allocation_daily_selected.csv"
+
 
   if (n_fail > 0) then
      error stop "At least one sensitivity scenario failed. Inspect the CSV file."
@@ -309,7 +326,7 @@ contains
 
   subroutine run_scenario(scenario_id, params, controls, initial_state, npp_rate, &
                           initial_storage, trait_case, state_case, background_mode, &
-                          checkpoint_unit, summary)
+                          checkpoint_unit, daily_unit ,summary)
 
     integer, intent(in) :: scenario_id
     type(Parameters), intent(in) :: params
@@ -321,6 +338,8 @@ contains
     integer, intent(in) :: state_case
     integer, intent(in) :: background_mode
     integer, intent(in) :: checkpoint_unit
+    integer, intent(in) :: daily_unit
+
     type(ScenarioSummary), intent(out) :: summary
 
     type(PlantCarbonState) :: state
@@ -369,7 +388,32 @@ contains
                                                 result%sapwood_to_heartwood
        summary%cumulative_unpaid_carbon_deficit = summary%cumulative_unpaid_carbon_deficit + &
                                                  result%unpaid_carbon_deficit
+       summary%cumulative_leaf_turnover_loss = summary%cumulative_leaf_turnover_loss + &
+                                                   result%leaf_turnover_loss
 
+       summary%cumulative_root_turnover_loss = summary%cumulative_root_turnover_loss + &
+                                       result%root_turnover_loss
+
+       summary%cumulative_sapwood_turnover_loss = summary%cumulative_sapwood_turnover_loss + &
+         result%sapwood_turnover_loss
+
+       summary%cumulative_storage_turnover_loss = summary%cumulative_storage_turnover_loss + &
+         result%storage_turnover_loss
+
+       summary%cumulative_heartwood_turnover_loss = summary%cumulative_heartwood_turnover_loss + &
+         result%heartwood_turnover_loss
+
+       summary%cumulative_sapwood_to_heartwood_turnover = &
+         summary%cumulative_sapwood_to_heartwood_turnover + &
+         result%sapwood_to_heartwood_turnover
+
+       summary%cumulative_total_sapwood_to_heartwood = &
+         summary%cumulative_total_sapwood_to_heartwood + &
+         result%total_sapwood_to_heartwood
+
+       summary%cumulative_turnover_carbon_loss = summary%cumulative_turnover_carbon_loss + &
+         result%turnover_carbon_loss
+       
        if (result%carbon_to_allocate > tiny_positive) then
           summary%days_with_allocation = summary%days_with_allocation + 1
        end if
@@ -385,6 +429,13 @@ contains
 
        current_storage_fraction = storage_fraction(state, carbon_storage)
        summary%max_storage_fraction = max(summary%max_storage_fraction, current_storage_fraction)
+
+              ! Save a compact trajectory file for selected scenarios only.
+       ! Rows are written every 30 days and on the final day to keep the file small.
+       if (should_write_daily_trace(summary, day)) then
+         call write_daily_row(daily_unit, summary, params, state, result, carbon_storage, day)
+       end if
+
 
        ! Save standardized checkpoints at the end of years 1, 5, and 10.
        ! These rows allow direct comparison of transient and longer-term
@@ -835,6 +886,93 @@ contains
     end select
 
   end function checkpoint_year_from_day
+
+  function should_write_daily_trace(summary, day) result(write_trace)
+
+   type(ScenarioSummary), intent(in) :: summary
+   integer, intent(in) :: day
+   logical :: write_trace
+   logical :: selected_npp
+   logical :: selected_storage
+   logical :: selected_state
+
+   ! Save only a subset of scenarios to keep the trajectory file compact.
+   selected_npp = abs(summary%npp_rate + 0.5_real64) < tiny_positive .or. &
+                  abs(summary%npp_rate - 0.5_real64) < tiny_positive .or. &
+                  abs(summary%npp_rate - 3.5_real64) < tiny_positive .or. &
+                  abs(summary%npp_rate - 8.0_real64) < tiny_positive
+
+   selected_storage = abs(summary%initial_storage - 0.0_real64) < tiny_positive .or. &
+                      abs(summary%initial_storage - 5.0_real64) < tiny_positive
+
+   selected_state = summary%state_case == 2 .or. &
+                    summary%state_case == 4 .or. &
+                    summary%state_case == 5
+
+   write_trace = summary%trait_case == 1 .and. selected_state .and. &
+                 selected_npp .and. selected_storage .and. &
+                 abs(summary%allometric_adjustment_days - 365.0_real64) < tiny_positive .and. &
+                 abs(summary%max_allocation_fraction - 0.005_real64) < tiny_positive .and. &
+                 (mod(day, 30) == 0 .or. day == n_days)
+
+ end function should_write_daily_trace
+
+
+ subroutine write_daily_header(daily_unit)
+
+   integer, intent(in) :: daily_unit
+
+   write(daily_unit,'(a)') &
+     "scenario_id,day,year,trait_case,state_case,background_mode,npp_rate,initial_storage," // &
+     "allometric_adjustment_days,max_allocation_fraction," // &
+     "leaf,root,sapwood,heartwood,height,storage," // &
+     "npp_daily,storage_after_npp_unclamped,unmet_storage_deficit,carbon_to_allocate," // &
+     "total_demand_daily,leaf_demand_daily,root_demand_daily,sapwood_demand_daily," // &
+     "delta_leaf,delta_root,delta_sapwood," // &
+     "leaf_starvation_loss,root_starvation_loss,sapwood_starvation_loss," // &
+     "sapwood_to_heartwood,starvation_carbon_loss,unpaid_carbon_deficit," // &
+     "leaf_turnover_loss,root_turnover_loss,sapwood_turnover_loss,storage_turnover_loss," // &
+     "heartwood_turnover_loss,sapwood_to_heartwood_turnover,total_sapwood_to_heartwood," // &
+     "turnover_carbon_loss,storage_fraction,leaf_root_residual,pipe_residual," // &
+     "structural_balance_error,storage_balance_error,whole_plant_balance_error"
+
+ end subroutine write_daily_header
+
+
+ subroutine write_daily_row(daily_unit, summary, params, state, result, carbon_storage, day)
+
+   integer, intent(in) :: daily_unit
+   type(ScenarioSummary), intent(in) :: summary
+   type(Parameters), intent(in) :: params
+   type(PlantCarbonState), intent(in) :: state
+   type(AllocationOutput), intent(in) :: result
+   real(real64), intent(in) :: carbon_storage
+   integer, intent(in) :: day
+
+   write(daily_unit,'(*(g0))') &
+   summary%scenario_id, ",", day, ",", real(day, real64) / 365.0_real64, ",", &
+   summary%trait_case, ",", summary%state_case, ",", summary%background_mode, ",", &
+   summary%npp_rate, ",", summary%initial_storage, ",", &
+   summary%allometric_adjustment_days, ",", summary%max_allocation_fraction, ",", &
+   state%leaf_mass, ",", state%root_mass, ",", state%sapwood_mass, ",", &
+   state%heartwood_mass, ",", state%height, ",", carbon_storage, ",", &
+   result%npp_daily, ",", result%storage_after_npp_unclamped, ",", &
+   result%unmet_storage_deficit, ",", result%carbon_to_allocate, ",", &
+   result%total_demand_daily, ",", result%leaf_demand_daily, ",", &
+   result%root_demand_daily, ",", result%sapwood_demand_daily, ",", &
+   result%delta_leaf, ",", result%delta_root, ",", result%delta_sapwood, ",", &
+   result%leaf_starvation_loss, ",", result%root_starvation_loss, ",", &
+   result%sapwood_starvation_loss, ",", result%sapwood_to_heartwood, ",", &
+   result%starvation_carbon_loss, ",", result%unpaid_carbon_deficit, ",", &
+   result%leaf_turnover_loss, ",", result%root_turnover_loss, ",", &
+   result%sapwood_turnover_loss, ",", result%storage_turnover_loss, ",", &
+   result%heartwood_turnover_loss, ",", result%sapwood_to_heartwood_turnover, ",", &
+   result%total_sapwood_to_heartwood, ",", result%turnover_carbon_loss, ",", &
+   storage_fraction(state, carbon_storage), ",", leaf_root_residual_for_state(params, state), ",", &
+   pipe_residual_for_state(params, state), ",", result%structural_balance_error, ",", &
+   result%storage_balance_error, ",", result%whole_plant_balance_error
+
+  end subroutine write_daily_row
 
 
   subroutine write_checkpoint_header(checkpoint_unit)
