@@ -10,15 +10,13 @@ program test_storage_allocation_sensitivity_turnover
    real(real64), parameter :: tol = 1.0e-10_real64
    real(real64), parameter :: tiny_positive = 1.0e-12_real64
  
-   integer, parameter :: n_npp = 5
-   integer, parameter :: n_storage = 3
-   integer, parameter :: n_adjustment = 3
-   integer, parameter :: n_max_fraction = 3
-   ! integer, parameter :: n_background = 2
-   integer, parameter :: n_background = 1
-   integer, parameter :: n_trait_case = 4
-   integer, parameter :: n_state_case = 5
-   integer, parameter :: n_turnover_storage = 5
+   integer, parameter :: n_npp = 1
+   integer, parameter :: n_storage = 1
+   integer, parameter :: n_adjustment = 1
+   integer, parameter :: n_max_fraction = 1
+   integer, parameter :: n_background = 1 ! change here to add background demand scenarios
+   integer, parameter :: n_trait_case = 1
+   integer, parameter :: n_turnover_storage = 1
  
    type :: ScenarioSummary
  
@@ -30,7 +28,6 @@ program test_storage_allocation_sensitivity_turnover
  
       ! Scenario factors.
       integer :: trait_case = 0
-      integer :: state_case = 0
       integer :: background_mode = 0
       real(real64) :: npp_rate = 0.0_real64
       real(real64) :: initial_storage = 0.0_real64
@@ -124,7 +121,6 @@ program test_storage_allocation_sensitivity_turnover
    integer :: i_max_fraction
    integer :: i_background
    integer :: i_trait_case
-   integer :: i_state_case
    integer :: i_turnover_storage
    integer :: scenario_id
    integer :: n_pass
@@ -138,13 +134,16 @@ program test_storage_allocation_sensitivity_turnover
    type(PlantCarbonState) :: initial_state
    type(ScenarioSummary) :: summary
  
-   npp_values = [ -0.5_real64, 0.0_real64, 0.5_real64, &
-                  3.5_real64, 8.0_real64 ]
-   storage_values = [ 0.0_real64, 0.5_real64, 5.0_real64 ]
-   adjustment_values = [ 30.0_real64, 365.0_real64, 730.0_real64 ]
-   max_fraction_values = [ 0.001_real64, 0.005_real64, 0.02_real64 ]
-   turnover_sto_values = [ 0.0_real64, 0.05_real64, 0.1_real64, 0.2_real64, 0.5_real64 ]
- 
+   npp_values = 3.5_real64 ![ -0.5_real64, 0.0_real64, 0.5_real64, &
+                 ! 3.5_real64, 8.0_real64 ]
+   ! storage_values = [ 0.0_real64, 0.5_real64, 5.0_real64 ]
+   storage_values = 0.5_real64
+   adjustment_values = 365.0_real64 ![ 30.0_real64, 365.0_real64, 730.0_real64 ]
+   ! max_fraction_values = [ 0.001_real64, 0.005_real64, 0.02_real64 ]
+   max_fraction_values = 0.005_real64
+   ! turnover_sto_values = [ 0.0_real64, 0.05_real64, 0.1_real64, 0.2_real64, 0.5_real64 ]
+   turnover_sto_values = 0.05_real64
+
    scenario_id = 0
    n_pass = 0
    n_fail = 0
@@ -165,37 +164,35 @@ program test_storage_allocation_sensitivity_turnover
    call write_daily_header(daily_unit)
  
    do i_trait_case = 1, n_trait_case
-      do i_state_case = 1, n_state_case
-         do i_background = 1, n_background
-            do i_max_fraction = 1, n_max_fraction
-               do i_adjustment = 1, n_adjustment
-                  do i_storage = 1, n_storage
-                     do i_npp = 1, n_npp
-                        do i_turnover_storage = 1, n_turnover_storage
- 
-                              scenario_id = scenario_id + 1
-      
-                              call initialize_parameters(params, i_trait_case)
-                              call initialize_controls(controls, &
-                                 adjustment_values(i_adjustment), &
-                                 max_fraction_values(i_max_fraction), &
-                                 i_background)
-                              call initialize_state(params, i_state_case, initial_state)
-      
-                              call run_scenario(scenario_id, params, controls, &
-                                 initial_state, npp_values(i_npp), &
-                                 storage_values(i_storage), i_trait_case, &
-                                 i_state_case, i_background, checkpoint_unit, &
-                                 daily_unit, summary)
-      
-                              call write_summary_row(summary_unit, summary)
-      
-                              if (summary%passed) then
-                                 n_pass = n_pass + 1
-                              else
-                                 n_fail = n_fail + 1
-                              end if
-                        end do
+      do i_background = 1, n_background
+         do i_max_fraction = 1, n_max_fraction
+            do i_adjustment = 1, n_adjustment
+               do i_storage = 1, n_storage
+                  do i_npp = 1, n_npp
+                     do i_turnover_storage = 1, n_turnover_storage
+
+                        scenario_id = scenario_id + 1
+   
+                        call initialize_parameters(params, i_trait_case)
+                        call initialize_controls(controls, &
+                           adjustment_values(i_adjustment), &
+                           max_fraction_values(i_max_fraction), &
+                           i_background)
+                        call initialize_state(params, initial_state)
+   
+                        call run_scenario(scenario_id, params, controls, &
+                           initial_state, npp_values(i_npp), &
+                           storage_values(i_storage), i_trait_case, &
+                           i_background, checkpoint_unit, &
+                           daily_unit, summary)
+
+                        call write_summary_row(summary_unit, summary)
+
+                        if (summary%passed) then
+                           n_pass = n_pass + 1
+                        else
+                           n_fail = n_fail + 1
+                        end if
                      end do
                   end do
                end do
@@ -285,52 +282,21 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine initialize_controls
  
  
-   subroutine initialize_state(params, state_case, state)
+   subroutine initialize_state(params, state)
  
      type(Parameters), intent(in) :: params
-     integer, intent(in) :: state_case
      type(PlantCarbonState), intent(out) :: state
  
      real(real64) :: leaf_mass
      real(real64) :: root_mass
      real(real64) :: sapwood_mass
      real(real64) :: heartwood_mass
- 
-     select case (state_case)
-     case (1)
-        ! Original imbalanced state.
-        leaf_mass = 1.0_real64
-        root_mass = 0.8_real64
-        sapwood_mass = 10.0_real64
-        heartwood_mass = 20.0_real64
-     case (2)
-        ! Approximately pipe-balanced and leaf-root-balanced state.
-        leaf_mass = 1.0_real64
-        root_mass = leaf_mass / params%leaf_to_root_ratio
-        heartwood_mass = 20.0_real64
-        sapwood_mass = solve_sapwood_for_pipe_balance(params, leaf_mass, &
-                                                      heartwood_mass)
-     case (3)
-        ! Leaf-rich state.
-        leaf_mass = 3.0_real64
-        root_mass = 0.8_real64
-        sapwood_mass = 10.0_real64
-        heartwood_mass = 20.0_real64
-     case (4)
-        ! Root-rich state.
-        leaf_mass = 0.8_real64
-        root_mass = 3.0_real64
-        sapwood_mass = 10.0_real64
-        heartwood_mass = 20.0_real64
-     case (5)
-        ! Sapwood-rich state.
-        leaf_mass = 1.0_real64
-        root_mass = 1.0_real64
-        sapwood_mass = 30.0_real64
-        heartwood_mass = 20.0_real64
-     case default
-        error stop "Unknown state case."
-     end select
+      ! Approximately pipe-balanced and leaf-root-balanced state.
+     leaf_mass = 1.0_real64
+     root_mass = leaf_mass / params%leaf_to_root_ratio
+     heartwood_mass = 20.0_real64
+     sapwood_mass = solve_sapwood_for_pipe_balance(params, leaf_mass, &
+                                                   heartwood_mass)
  
      state = build_state(params, leaf_mass, root_mass, sapwood_mass, &
                          heartwood_mass)
@@ -359,7 +325,7 @@ program test_storage_allocation_sensitivity_turnover
  
  
    subroutine run_scenario(scenario_id, params, controls, initial_state, &
-                           npp_rate, initial_storage, trait_case, state_case, &
+                           npp_rate, initial_storage, trait_case, &
                            background_mode, checkpoint_unit, daily_unit, summary)
  
      integer, intent(in) :: scenario_id
@@ -369,7 +335,6 @@ program test_storage_allocation_sensitivity_turnover
      real(real64), intent(in) :: npp_rate
      real(real64), intent(in) :: initial_storage
      integer, intent(in) :: trait_case
-     integer, intent(in) :: state_case
      integer, intent(in) :: background_mode
      integer, intent(in) :: checkpoint_unit
      integer, intent(in) :: daily_unit
@@ -383,7 +348,7 @@ program test_storage_allocation_sensitivity_turnover
      integer :: day
  
      call initialize_summary(summary, scenario_id, params, controls, &
-        initial_state, npp_rate, initial_storage, trait_case, state_case, &
+        initial_state, npp_rate, initial_storage, trait_case, &
         background_mode)
  
      state = initial_state
@@ -472,7 +437,7 @@ program test_storage_allocation_sensitivity_turnover
  
    subroutine initialize_summary(summary, scenario_id, params, controls, &
                                  initial_state, npp_rate, initial_storage, &
-                                 trait_case, state_case, background_mode)
+                                 trait_case, background_mode)
  
      type(ScenarioSummary), intent(out) :: summary
      integer, intent(in) :: scenario_id
@@ -482,7 +447,6 @@ program test_storage_allocation_sensitivity_turnover
      real(real64), intent(in) :: npp_rate
      real(real64), intent(in) :: initial_storage
      integer, intent(in) :: trait_case
-     integer, intent(in) :: state_case
      integer, intent(in) :: background_mode
  
      summary = ScenarioSummary()
@@ -493,7 +457,6 @@ program test_storage_allocation_sensitivity_turnover
      summary%failure_reason = "OK"
  
      summary%trait_case = trait_case
-     summary%state_case = state_case
      summary%background_mode = background_mode
      summary%npp_rate = npp_rate
      summary%initial_storage = initial_storage
@@ -1063,7 +1026,6 @@ program test_storage_allocation_sensitivity_turnover
      logical :: write_trace
      logical :: selected_npp
      logical :: selected_storage
-     logical :: selected_state
  
      selected_npp = abs(summary%npp_rate + 0.5_real64) < tiny_positive .or. &
                     abs(summary%npp_rate - 0.5_real64) < tiny_positive .or. &
@@ -1075,12 +1037,8 @@ program test_storage_allocation_sensitivity_turnover
                         abs(summary%initial_storage - 5.0_real64) < &
                         tiny_positive
  
-     selected_state = summary%state_case == 2 .or. &
-                      summary%state_case == 4 .or. &
-                      summary%state_case == 5
  
-     write_trace = summary%trait_case == 1 .and. &
-                   selected_state .and. selected_npp .and. &
+     write_trace = summary%trait_case == 1 .and. selected_npp .and. &
                    selected_storage .and. &
                    abs(summary%allometric_adjustment_days - 365.0_real64) &
                    < tiny_positive .and. &
@@ -1097,7 +1055,7 @@ program test_storage_allocation_sensitivity_turnover
  
      write(summary_unit,'(a)') &
        "scenario_id,status,fail_day,failure_reason," // &
-       "trait_case,state_case,background_mode,npp_rate,initial_storage," // &
+       "trait_case,background_mode,npp_rate,initial_storage," // &
        "allometric_adjustment_days,max_allocation_fraction," // &
        "initial_leaf,initial_root,initial_sapwood,initial_heartwood," // &
        "initial_height,initial_living_carbon,initial_structural_carbon," // &
@@ -1149,7 +1107,7 @@ program test_storage_allocation_sensitivity_turnover
      write(summary_unit,'(*(g0))') &
        summary%scenario_id, ",", trim(status), ",", summary%fail_day, ",", &
        trim(summary%failure_reason), ",", summary%trait_case, ",", &
-       summary%state_case, ",", summary%background_mode, ",", &
+       summary%background_mode, ",", &
        summary%npp_rate, ",", summary%initial_storage, ",", &
        summary%allometric_adjustment_days, ",", &
        summary%max_allocation_fraction, ",", summary%initial_leaf, ",", &
@@ -1210,7 +1168,7 @@ program test_storage_allocation_sensitivity_turnover
  
      write(checkpoint_unit,'(a)') &
        "scenario_id,checkpoint_year,checkpoint_day,status,fail_day," // &
-       "failure_reason,trait_case,state_case,background_mode,npp_rate," // &
+       "failure_reason,trait_case,background_mode,npp_rate," // &
        "initial_storage,allometric_adjustment_days,max_allocation_fraction," // &
        "leaf,root,sapwood,heartwood,height,storage,living_carbon," // &
        "structural_carbon,total_carbon,cumulative_npp," // &
@@ -1287,7 +1245,7 @@ program test_storage_allocation_sensitivity_turnover
        summary%scenario_id, ",", checkpoint_year, ",", day, ",", &
        trim(status), ",", summary%fail_day, ",", &
        trim(summary%failure_reason), ",", summary%trait_case, ",", &
-       summary%state_case, ",", summary%background_mode, ",", &
+       summary%background_mode, ",", &
        summary%npp_rate, ",", summary%initial_storage, ",", &
        summary%allometric_adjustment_days, ",", &
        summary%max_allocation_fraction, ",", state%leaf_mass, ",", &
@@ -1337,7 +1295,7 @@ program test_storage_allocation_sensitivity_turnover
      integer, intent(in) :: daily_unit
  
      write(daily_unit,'(a)') &
-       "scenario_id,day,year,trait_case,state_case,background_mode," // &
+       "scenario_id,day,year,trait_case,background_mode," // &
        "npp_rate,initial_storage,allometric_adjustment_days," // &
        "max_allocation_fraction,leaf,root,sapwood,heartwood," // &
        "height,storage,living_carbon,structural_carbon,total_carbon," // &
@@ -1372,7 +1330,7 @@ program test_storage_allocation_sensitivity_turnover
      write(daily_unit,'(*(g0))') &
        summary%scenario_id, ",", day, ",", &
        real(day, real64) / 365.0_real64, ",", &
-       summary%trait_case, ",", summary%state_case, ",", &
+       summary%trait_case, ",",  &
        summary%background_mode, ",", summary%npp_rate, ",", &
        summary%initial_storage, ",", &
        summary%allometric_adjustment_days, ",", &

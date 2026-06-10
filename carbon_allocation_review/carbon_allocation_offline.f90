@@ -89,7 +89,7 @@ module carbon_allocation_offline_kernel
    real(real64), parameter :: l_turnover   = 1.0_real64 / 4.0_real64
    real(real64), parameter :: r_turnover   = 1.0_real64 / 4.0_real64
    real(real64), parameter :: s_turnover   = 1.0_real64 / 20.0_real64
-   real(real64), parameter :: sto_turnover = 0.0_real64 !! for the first run it will be 0 1.0_real64 / 20.0_real64
+   real(real64), parameter :: sto_turnover = 1.0_real64 / 20.0_real64
    real(real64), parameter :: h_turnover   = 1.0_real64 / 150.0_real64
 
   !--------------------------------------------------------------------------

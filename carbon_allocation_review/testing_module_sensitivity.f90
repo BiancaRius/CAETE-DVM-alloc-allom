@@ -6,13 +6,13 @@ program test_storage_allocation_sensitivity
 
   implicit none
 
-  integer, parameter :: n_days = 365 * 10
+  integer, parameter :: n_days = 365 * 30
   real(real64), parameter :: tol = 1.0e-10_real64
   real(real64), parameter :: tiny_positive = 1.0e-12_real64
 
-  integer, parameter :: n_npp = 5
+  integer, parameter :: n_npp = 1
   integer, parameter :: n_storage = 3
-  integer, parameter :: n_adjustment = 3
+  integer, parameter :: n_adjustment = 1
   integer, parameter :: n_max_fraction = 3
   integer, parameter :: n_background = 2
   integer, parameter :: n_trait_case = 4
@@ -94,9 +94,11 @@ program test_storage_allocation_sensitivity
   type(PlantCarbonState) :: initial_state
   type(ScenarioSummary) :: summary
 
-  npp_values = [ -0.5_real64, 0.0_real64, 0.5_real64, 3.5_real64, 8.0_real64 ]
+!   npp_values = [ -0.5_real64, 0.0_real64, 0.5_real64, 3.5_real64, 8.0_real64 ]
+  npp_values = 3.5_real64
   storage_values = [ 0.0_real64, 0.5_real64, 5.0_real64 ]
-  adjustment_values = [ 30.0_real64, 365.0_real64, 730.0_real64 ]
+!   adjustment_values = [ 30.0_real64, 365.0_real64, 730.0_real64 ]
+  adjustment_values = 365.0_real64
   max_fraction_values = [ 0.001_real64, 0.005_real64, 0.02_real64 ]
 
   scenario_id = 0

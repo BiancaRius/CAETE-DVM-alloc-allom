@@ -780,3 +780,211 @@ ggplot(summary_df, aes(x = factor(npp_rate), y = final_leaf_root_residual)) +
 
 8. Residuals continuam ruins apesar de storage alto?
    Sim → carbono existe, mas não está sendo usado de forma adequada para corrigir a estrutura.
+   
+   
+#########################
+Now looking to the table of checkpoints
+#########################
+
+This table will tell us how each scenario evolved through time (trajectory)
+
+```{r}
+# Read the checkpoint-level summary file
+checkpoint_df <- read_csv(
+  file.path(base_dir, "storage_allocation_sensitivity_checkpoints_turnover.csv"),
+  show_col_types = FALSE
+)
+
+# Check the size of the checkpoint table
+dim(checkpoint_df)
+
+# Check available checkpoint years
+checkpoint_df %>%
+  count(checkpoint_year)
+```
+The question this table answers:
+
+Now we want to know:
+Does the problem appear in the first year?
+Does storage accumulate progressively?
+Does the residual pipeline improve or worsen over time?
+Does structural allocation happen early or does it saturate?
+Does turnover become more dominant over the years?
+
+1. Mean evolution by NPP, background and year
+```{r}
+# Summarise temporal dynamics by checkpoint year, NPP, and background mode
+checkpoint_summary <- checkpoint_df %>%
+  group_by(checkpoint_year, npp_rate, background_mode) %>%
+  summarise(
+    n_scenarios = n(),
+
+    # Carbon pools
+    mean_living_carbon = mean(living_carbon, na.rm = TRUE),
+    mean_storage = mean(storage, na.rm = TRUE),
+    mean_storage_frac_living = mean(storage_fraction_living, na.rm = TRUE),
+
+    # Carbon allocation
+    mean_structural_allocation = mean(cumulative_structural_allocation, na.rm = TRUE),
+    mean_structural_fraction = mean(structural_fraction_of_positive_npp, na.rm = TRUE),
+
+    # Turnover and starvation
+    mean_turnover_loss = mean(cumulative_turnover_carbon_loss, na.rm = TRUE),
+    mean_starvation_loss = mean(cumulative_starvation_carbon_loss, na.rm = TRUE),
+    mean_unpaid_deficit = mean(cumulative_unpaid_carbon_deficit, na.rm = TRUE),
+
+    # Allometric residuals
+    mean_leaf_root_residual = mean(leaf_root_residual, na.rm = TRUE),
+    mean_abs_leaf_root_residual = mean(abs(leaf_root_residual), na.rm = TRUE),
+    mean_pipe_residual = mean(pipe_residual, na.rm = TRUE),
+    mean_abs_pipe_residual = mean(abs(pipe_residual), na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+print(checkpoint_summary)
+
+
+```
+The checkpoint analysis shows that background demand strongly improves carbon allocation trajectories. Under moderate NPP (3.5) with background demand enabled, living carbon increases steadily, storage remains moderate, and the pipe residual moves toward zero, indicating recovery of leaf–sapwood balance. This is the most plausible trajectory.
+
+Without background demand, storage accumulates progressively, structural allocation becomes proportionally weak, and the plant fails to maintain coherent carbon allocation, especially under high NPP.
+
+Under high NPP (8.0) with background demand enabled, the plant grows substantially, but storage still exceeds living biomass by year 5 and remains high at year 10. The pipe residual also becomes positive, suggesting that leaf biomass increases faster than sapwood support. Therefore, background demand improves the allocation scheme but is not sufficient to prevent excessive storage accumulation under high carbon availability.
+
+2. Interval changes between the checkpoints
+```{r}
+# Compute interval changes between checkpoints for each scenario
+checkpoint_intervals <- checkpoint_df %>%
+  group_by(scenario_id) %>%
+  arrange(checkpoint_year, .by_group = TRUE) %>%
+  mutate(
+    interval = case_when(
+      checkpoint_year == 1 ~ "0_to_1",
+      checkpoint_year == 5 ~ "1_to_5",
+      checkpoint_year == 10 ~ "5_to_10",
+      TRUE ~ NA_character_
+    ),
+
+    # Changes in pools
+    delta_living_carbon = living_carbon - lag(living_carbon, default = first(living_carbon)),
+    delta_storage = storage - lag(storage, default = first(storage)),
+    delta_total_carbon = total_carbon - lag(total_carbon, default = first(total_carbon)),
+
+    # Changes in cumulative fluxes
+    delta_structural_allocation = cumulative_structural_allocation -
+      lag(cumulative_structural_allocation, default = 0),
+
+    delta_turnover_loss = cumulative_turnover_carbon_loss -
+      lag(cumulative_turnover_carbon_loss, default = 0),
+
+    delta_starvation_loss = cumulative_starvation_carbon_loss -
+      lag(cumulative_starvation_carbon_loss, default = 0),
+
+    delta_unpaid_deficit = cumulative_unpaid_carbon_deficit -
+      lag(cumulative_unpaid_carbon_deficit, default = 0)
+  ) %>%
+  ungroup()
+
+# Summarise changes between checkpoint intervals
+interval_summary <- checkpoint_intervals %>%
+  group_by(interval, npp_rate, background_mode) %>%
+  summarise(
+    n_scenarios = n(),
+
+    mean_delta_living_carbon = mean(delta_living_carbon, na.rm = TRUE),
+    mean_delta_storage = mean(delta_storage, na.rm = TRUE),
+    mean_delta_total_carbon = mean(delta_total_carbon, na.rm = TRUE),
+
+    mean_delta_structural_allocation = mean(delta_structural_allocation, na.rm = TRUE),
+    mean_delta_turnover_loss = mean(delta_turnover_loss, na.rm = TRUE),
+    mean_delta_starvation_loss = mean(delta_starvation_loss, na.rm = TRUE),
+    mean_delta_unpaid_deficit = mean(delta_unpaid_deficit, na.rm = TRUE),
+
+    mean_pipe_residual = mean(pipe_residual, na.rm = TRUE),
+    mean_abs_pipe_residual = mean(abs(pipe_residual), na.rm = TRUE),
+    mean_storage_frac_living = mean(storage_fraction_living, na.rm = TRUE),
+
+    .groups = "drop"
+  )
+
+print(interval_summary)
+```
+
+```{r}
+# Plot storage fraction over checkpoint years
+ggplot(
+  checkpoint_df,
+  aes(
+    x = checkpoint_year,
+    y = storage_fraction_living,
+    group = interaction(npp_rate, background_mode)
+  )
+) +
+  stat_summary(aes(color = factor(npp_rate)), fun = mean, geom = "line") +
+  stat_summary(aes(color = factor(npp_rate)), fun = mean, geom = "point") +
+  facet_wrap(~ background_mode) +
+  theme_bw() +
+  labs(
+    x = "Checkpoint year",
+    y = "Storage / living carbon",
+    color = "NPP rate",
+    title = "Temporal evolution of storage accumulation"
+  )
+```
+
+```{r}
+# Plot living carbon over checkpoint years
+ggplot(
+  checkpoint_df,
+  aes(
+    x = checkpoint_year,
+    y = living_carbon,
+    group = interaction(npp_rate, background_mode)
+  )
+) +
+  stat_summary(aes(color = factor(npp_rate)), fun = mean, geom = "line") +
+  stat_summary(aes(color = factor(npp_rate)), fun = mean, geom = "point") +
+  facet_wrap(~ background_mode) +
+  theme_bw() +
+  labs(
+    x = "Checkpoint year",
+    y = "Living carbon",
+    color = "NPP rate",
+    title = "Temporal evolution of living carbon"
+  )
+```
+
+```{r}
+# Plot pipe-model residual over checkpoint years
+ggplot(
+  checkpoint_df,
+  aes(
+    x = checkpoint_year,
+    y = pipe_residual,
+    group = interaction(npp_rate, background_mode)
+  )
+) +
+  stat_summary(aes(color = factor(npp_rate)), fun = mean, geom = "line") +
+  stat_summary(aes(color = factor(npp_rate)), fun = mean, geom = "point") +
+  facet_wrap(~ background_mode) +
+  theme_bw() +
+  labs(
+    x = "Checkpoint year",
+    y = "Pipe-model residual",
+    color = "NPP rate",
+    title = "Temporal evolution of pipe-model residual"
+  )
+```
+1. NPP baixa ou zero → perda progressiva de biomassa viva e pipe residual negativo.
+2. NPP moderada + background ligado → trajetória mais plausível.
+3. NPP alta + background ligado → crescimento forte, mas storage fica excessivo já no ano 5.
+4. Background desligado → storage acumula progressivamente e a estrutura não acompanha.
+
+A trajetória confirma que o background demand é essencial para manter um sink estrutural ativo. Com NPP moderada e background demand ligado, a planta aumenta biomassa viva, mantém storage moderado e recupera o balanço folha-sapwood ao longo do tempo. Sem background demand, o carbono acumula progressivamente no storage, a fração estrutural diminui e a biomassa viva não se mantém.
+```{r}
+```
+
+
+```{r}
+```
