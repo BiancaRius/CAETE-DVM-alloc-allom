@@ -86,7 +86,10 @@ module carbon_allocation_offline_kernel
    ! Annual turnover rates for plant carbon compartments.
    ! Leaf, fine-root, labile storage, and heartwood turnover remove carbon
    ! from the plant. Sapwood turnover converts living sapwood into heartwood.
+
+   ! ATTENTION: Leaf turnover will be calculated from SLA
    real(real64), parameter :: l_turnover   = 1.0_real64 / 4.0_real64
+
    real(real64), parameter :: r_turnover   = 1.0_real64 / 4.0_real64
    real(real64), parameter :: s_turnover   = 1.0_real64 / 20.0_real64
    real(real64), parameter :: sto_turnover = 1.0_real64 / 20.0_real64
@@ -111,8 +114,6 @@ module carbon_allocation_offline_kernel
       ! Units must be consistent with carbon mass and volume.
       ! Example: gC m-3 if carbon pools are in gC.
       real(real64) :: wood_density
-
-      
 
 
      !!! Global parameters !!!
@@ -159,7 +160,6 @@ module carbon_allocation_offline_kernel
       real(real64) :: allometric_adjustment_days = 365.0_real64
 
       ! Maximum relative structural growth allowed in one time step.
-      !
       ! This parameter is a daily growth-rate cap. It prevents the plant from
       ! converting a very large amount of storage carbon into new structural biomass
       ! in a single time step, even when storage and allometric demand are both high.
@@ -176,8 +176,9 @@ module carbon_allocation_offline_kernel
       !
       ! This parameter should be interpreted as a maximum tissue-construction
       ! capacity, not as a carbon-availability term.
-
-      real(real64) :: max_allocation_fraction = 0.005_real64
+      
+      ! ATTENTION: test different values for this parameter
+      real(real64) :: max_allocation_fraction = 0.005_real64 ! This value can be adjusted to represent fast/slow growth strategies. 
 
 
       !!!! TO BE READJUSTED (can express fast/slow growth strategies)

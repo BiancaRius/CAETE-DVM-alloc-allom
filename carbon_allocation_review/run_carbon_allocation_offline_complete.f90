@@ -1,4 +1,34 @@
-program test_storage_allocation_sensitivity_turnover
+!===============================================================================
+! Offline driver for the carbon-allocation kernel.
+!
+! Purpose
+! -------
+! This program runs controlled, daily carbon-allocation experiments outside the
+! full vegetation model. It is intended to test the numerical behavior and
+! carbon accounting of the allocation routine across combinations of NPP,
+! initial labile storage, allometric adjustment speed, construction capacity,
+! background structural demand, and plant traits.
+!
+! For each scenario, the driver:
+!   1. initializes plant traits, allocation controls, and carbon pools;
+!   2. calls allocate_gradual_with_storage once per simulated day;
+!   3. checks pool non-negativity, finite values, allocation limits, and carbon
+!      balance errors;
+!   4. accumulates growth, starvation, turnover, and storage diagnostics; and
+!   5. writes summary, checkpoint, and selected time-series CSV files.
+!
+! Important scope
+! ---------------
+! NPP is prescribed as a constant annual rate within each scenario. This driver
+! does not simulate climate, photosynthesis, or respiration; those processes
+! would determine the NPP supplied to the allocation kernel in the full model.
+! All carbon variables use the same mass units as carbon_allocation_offline_kernel.
+!===============================================================================
+! ATTENTION: this is the complete version of the file, with all the cheks of erros and
+! carbon balance. The other version is a simplified one (run_carbon_allocation_offline.f90), 
+!with less checks and more focused on the allocation itself.
+
+program run_carbon_allocation_offline
 
    use, intrinsic :: iso_fortran_env, only: real64
    use, intrinsic :: ieee_arithmetic, only: ieee_is_finite
@@ -6,18 +36,67 @@ program test_storage_allocation_sensitivity_turnover
  
    implicit none
  
+   ! Simulation length. The current allocation controls assume one call per day.
    integer, parameter :: n_days = 365 * 10
+
+   ! Acceptance tolerance for non-negativity, limiter, and carbon-balance tests.
    real(real64), parameter :: tol = 1.0e-10_real64
+
+   ! Threshold used to classify very small fluxes as zero and to match selected
+   ! floating-point scenario values when deciding which traces to write.
    real(real64), parameter :: tiny_positive = 1.0e-12_real64
- 
+   
+
+   !________________________________________________________________________
+   ! Testing different scenario factors. Each factor is represented by an array of values
+
+   ! Number of levels in each scenario factor. These dimensions must match the
+   ! corresponding value arrays declared below (for example, if you want to test 
+   ! 10 values of npp, n_npp should be 10). 
+
+   ! Number of NPP levels included in the scenario matrix.
+   ! This factor tests how carbon supply affects storage accumulation,
+   ! structural growth, starvation risk, and allometric adjustment.
+   ! It can be also used to test a theoretical fluctuation in NPP through time
    integer, parameter :: n_npp = 1
+
+   ! Number of initial storage levels included in the scenario matrix.
+   ! This factor tests how the amount of labile carbon available at the
+   ! beginning of the simulation affects growth, buffering of negative NPP,
+   ! and the ability to satisfy structural demand.
    integer, parameter :: n_storage = 1
+
+   ! Number of allometric adjustment timescales included in the scenario matrix.
+   ! This factor tests how quickly the plant attempts to correct imbalances
+   ! among leaf, fine-root, and sapwood biomass.
    integer, parameter :: n_adjustment = 1
+
+   ! Number of maximum allocation fractions included in the scenario matrix.
+   ! This factor tests the effect of the daily construction-capacity limit,
+   ! that is, the maximum fraction of living structural carbon that can be
+   ! converted into new biomass during one timestep.
    integer, parameter :: n_max_fraction = 1
-   integer, parameter :: n_background = 1 ! change here to add background demand scenarios
+
+   ! Number of background-growth configurations included in the scenario matrix.
+   ! This factor tests whether continued structural demand is allowed when the
+   ! plant is already close to its allometric targets.
+   integer, parameter :: n_background = 1
+
+   ! Number of trait combinations included in the scenario matrix.
+   ! This factor tests how alternative plant strategies, such as differences
+   ! in SLA or wood density, modify allometric requirements and allocation.
    integer, parameter :: n_trait_case = 1
+
+   ! Number of storage-turnover values intended for the scenario matrix.
+   ! This factor is meant to test how quickly labile storage is lost through
+   ! turnover. In the current implementation, however, these values are not yet
+   ! passed to the allocation module, so changing this dimension alone does not
+   ! modify the storage-turnover rate actually used by the model.
    integer, parameter :: n_turnover_storage = 1
- 
+
+   ! Container for scenario metadata, end states, cumulative fluxes, numerical
+   ! diagnostics, and event counts. Quantities labelled "cumulative" are sums
+   ! across all completed daily timesteps.
    type :: ScenarioSummary
  
       ! Scenario identifiers.
@@ -34,7 +113,9 @@ program test_storage_allocation_sensitivity_turnover
       real(real64) :: allometric_adjustment_days = 0.0_real64
       real(real64) :: max_allocation_fraction = 0.0_real64
  
-      ! Initial state.
+      ! Initial state. "Living carbon" includes leaf, fine root, and sapwood.
+      ! "Structural carbon" also includes heartwood, and "total carbon" adds
+      ! labile storage to structural carbon.
       real(real64) :: initial_leaf = 0.0_real64
       real(real64) :: initial_root = 0.0_real64
       real(real64) :: initial_sapwood = 0.0_real64
@@ -44,7 +125,8 @@ program test_storage_allocation_sensitivity_turnover
       real(real64) :: initial_structural_carbon = 0.0_real64
       real(real64) :: initial_total_carbon = 0.0_real64
  
-      ! Final state.
+      ! Final state and net changes relative to the initialized plant. The same
+      ! living, structural, and total-carbon definitions are used as above.
       real(real64) :: final_leaf = 0.0_real64
       real(real64) :: final_root = 0.0_real64
       real(real64) :: final_sapwood = 0.0_real64
@@ -57,12 +139,17 @@ program test_storage_allocation_sensitivity_turnover
       real(real64) :: net_living_carbon_change = 0.0_real64
       real(real64) :: net_total_carbon_change = 0.0_real64
  
-      ! Integrated carbon inputs and structural allocation.
+      ! Integrated carbon input and construction. Positive NPP is tracked
+      ! separately because structural allocation can also be financed by initial
+      ! storage; therefore, allocation / positive NPP is only a diagnostic ratio.
       real(real64) :: cumulative_npp = 0.0_real64
       real(real64) :: cumulative_positive_npp = 0.0_real64
       real(real64) :: cumulative_structural_allocation = 0.0_real64
  
-      ! Integrated starvation fluxes.
+      ! Integrated starvation diagnostics. An unmet storage deficit is the
+      ! carbon shortfall created when negative NPP exceeds available storage.
+      ! Leaf and root starvation losses leave the plant carbon system, whereas
+      ! starved sapwood is transferred to heartwood in the current kernel.
       real(real64) :: cumulative_unmet_storage_deficit = 0.0_real64
       real(real64) :: cumulative_leaf_starvation_loss = 0.0_real64
       real(real64) :: cumulative_root_starvation_loss = 0.0_real64
@@ -71,7 +158,9 @@ program test_storage_allocation_sensitivity_turnover
       real(real64) :: cumulative_starvation_carbon_loss = 0.0_real64
       real(real64) :: cumulative_unpaid_carbon_deficit = 0.0_real64
  
-      ! Integrated turnover fluxes.
+      ! Integrated turnover diagnostics. Sapwood turnover is transferred to
+      ! heartwood and is therefore not counted as an immediate whole-plant carbon
+      ! loss; turnover losses from other pools leave the tracked plant system.
       real(real64) :: cumulative_leaf_turnover_loss = 0.0_real64
       real(real64) :: cumulative_root_turnover_loss = 0.0_real64
       real(real64) :: cumulative_sapwood_turnover_loss = 0.0_real64
@@ -81,7 +170,9 @@ program test_storage_allocation_sensitivity_turnover
       real(real64) :: cumulative_total_sapwood_to_heartwood = 0.0_real64
       real(real64) :: cumulative_turnover_carbon_loss = 0.0_real64
  
-      ! Final allometric and storage diagnostics.
+      ! Final allometric and storage diagnostics. Residuals are biological
+      ! disequilibrium metrics, not numerical errors, and need not equal zero at
+      ! each daily timestep in a gradual-allocation scheme.
       real(real64) :: final_leaf_root_residual = 0.0_real64
       real(real64) :: final_pipe_residual = 0.0_real64
       real(real64) :: final_storage_fraction_total = 0.0_real64
@@ -90,7 +181,8 @@ program test_storage_allocation_sensitivity_turnover
       real(real64) :: max_storage_fraction_living = 0.0_real64
       real(real64) :: structural_fraction_of_positive_npp = 0.0_real64
  
-      ! Numerical diagnostics.
+      ! Numerical diagnostics and observed extrema used to detect instability,
+      ! bookkeeping errors, negative pools, or unintended allocation spikes.
       real(real64) :: max_abs_structural_balance_error = 0.0_real64
       real(real64) :: max_abs_storage_balance_error = 0.0_real64
       real(real64) :: max_abs_whole_plant_balance_error = 0.0_real64
@@ -99,7 +191,8 @@ program test_storage_allocation_sensitivity_turnover
       real(real64) :: max_daily_allocation_observed = 0.0_real64
       real(real64) :: max_daily_demand_observed = 0.0_real64
  
-      ! Event counters.
+      ! Event counters quantify how often key processes or storage thresholds
+      ! occurred during the scenario, rather than only reporting final values.
       integer :: days_with_allocation = 0
       integer :: days_with_unmet_storage_deficit = 0
       integer :: days_with_turnover = 0
@@ -109,6 +202,10 @@ program test_storage_allocation_sensitivity_turnover
  
    end type ScenarioSummary
  
+   ! Scenario-factor arrays. Scalar assignment below broadcasts the same value
+   ! to every element; array constructors can be used when multiple levels are
+   ! enabled. NPP rates are annualized inputs and are scaled by dt_years inside
+   ! the allocation kernel.
    real(real64), dimension(n_npp) :: npp_values
    real(real64), dimension(n_storage) :: storage_values
    real(real64), dimension(n_adjustment) :: adjustment_values
@@ -121,7 +218,7 @@ program test_storage_allocation_sensitivity_turnover
    integer :: i_max_fraction
    integer :: i_background
    integer :: i_trait_case
-   integer :: i_turnover_storage
+   !integer :: i_turnover_storage !uncomment if you want to test different storage turnover values
    integer :: scenario_id
    integer :: n_pass
    integer :: n_fail
@@ -134,20 +231,37 @@ program test_storage_allocation_sensitivity_turnover
    type(PlantCarbonState) :: initial_state
    type(ScenarioSummary) :: summary
  
-   npp_values = 3.5_real64 ![ -0.5_real64, 0.0_real64, 0.5_real64, &
-                 ! 3.5_real64, 8.0_real64 ]
-   ! storage_values = [ 0.0_real64, 0.5_real64, 5.0_real64 ]
+   ! Active scenario values. Examples of broader sensitivity grids are retained
+   ! below each factor for convenient reactivation; update the corresponding n_*
+   ! dimension whenever an array constructor contains more than one value.
+   npp_values = 3.5_real64
+   ! Example: npp_values = [ -0.5_real64, 0.0_real64, 0.5_real64, &
+   !                          3.5_real64, 8.0_real64 ]
+
    storage_values = 0.5_real64
-   adjustment_values = 365.0_real64 ![ 30.0_real64, 365.0_real64, 730.0_real64 ]
-   ! max_fraction_values = [ 0.001_real64, 0.005_real64, 0.02_real64 ]
+   ! Example: storage_values = [ 0.0_real64, 0.5_real64, 5.0_real64 ]
+
+   adjustment_values = 365.0_real64
+   ! Example: adjustment_values = [ 30.0_real64, 365.0_real64, 730.0_real64 ]
+
    max_fraction_values = 0.005_real64
-   ! turnover_sto_values = [ 0.0_real64, 0.05_real64, 0.1_real64, 0.2_real64, 0.5_real64 ]
-   turnover_sto_values = 0.05_real64
+   ! Example: max_fraction_values = [ 0.001_real64, 0.005_real64, &
+   !                                  0.02_real64 ]
+
+   ! IMPORTANT: this array is currently a placeholder only. Its selected value is
+   ! not passed to ControlsParam or to allocate_gradual_with_storage because the
+   ! storage-turnover rate is defined inside the kernel module. Increasing
+   ! n_turnover_storage in the current code would therefore repeat identical
+   ! scenarios rather than perform a true storage-turnover sensitivity analysis.
+   ! turnover_sto_values = 0.05_real64
+   ! Intended future grid: [ 0.0, 0.05, 0.10, 0.20, 0.50 ] yr^-1.
 
    scenario_id = 0
    n_pass = 0
    n_fail = 0
- 
+
+   ! Create new output files for this run. status="replace" intentionally
+   ! overwrites files with the same names in the current working directory.
    open(newunit=summary_unit, &
         file="storage_allocation_sensitivity_summary_turnover.csv", &
         status="replace", action="write")
@@ -163,16 +277,21 @@ program test_storage_allocation_sensitivity_turnover
         status="replace", action="write")
    call write_daily_header(daily_unit)
  
+   ! Evaluate every combination of the enabled scenario factors. The order of
+   ! the loops only controls scenario numbering and output order.
    do i_trait_case = 1, n_trait_case
       do i_background = 1, n_background
          do i_max_fraction = 1, n_max_fraction
             do i_adjustment = 1, n_adjustment
                do i_storage = 1, n_storage
                   do i_npp = 1, n_npp
-                     do i_turnover_storage = 1, n_turnover_storage
+                     
+                     ! use this loop to test different storage turnover values in the future
+                     !do i_turnover_storage = 1, n_turnover_storage
 
                         scenario_id = scenario_id + 1
    
+                        ! Build all inputs for one independent scenario.
                         call initialize_parameters(params, i_trait_case)
                         call initialize_controls(controls, &
                            adjustment_values(i_adjustment), &
@@ -180,6 +299,8 @@ program test_storage_allocation_sensitivity_turnover
                            i_background)
                         call initialize_state(params, initial_state)
    
+                        ! Run the complete daily simulation and return an
+                        ! aggregated validation and carbon-accounting summary.
                         call run_scenario(scenario_id, params, controls, &
                            initial_state, npp_values(i_npp), &
                            storage_values(i_storage), i_trait_case, &
@@ -193,7 +314,7 @@ program test_storage_allocation_sensitivity_turnover
                         else
                            n_fail = n_fail + 1
                         end if
-                     end do
+                     !end do
                   end do
                end do
             end do
@@ -218,14 +339,22 @@ program test_storage_allocation_sensitivity_turnover
  
  contains
  
+   !---------------------------------------------------------------------------
+   ! Initialize the trait and allometric parameter set for one strategy.
+   !
+   ! The base case is assigned first, after which trait_case changes one focal
+   ! trait while keeping all remaining parameters fixed. This design isolates
+   ! the effect of the selected trait in sensitivity tests.
+   !---------------------------------------------------------------------------
    subroutine initialize_parameters(params, trait_case)
  
      type(Parameters), intent(out) :: params
      integer, intent(in) :: trait_case
  
-     ! Base parameter set for the offline sensitivity test.
-     ! All trait cases keep the same allometric coefficients and perturb only
-     ! one plant trait at a time.
+     ! Assign the common baseline first. SLA controls leaf area per unit leaf
+     ! carbon; LATOSA defines the target leaf-area:sapwood-area relationship;
+     ! wood_density converts stem carbon to volume; leaf_to_root_ratio defines
+     ! the target mass balance; and allom2/allom3 define height-diameter allometry.
      params%sla = 12.0_real64
      params%latosa = 8000.0_real64
      params%wood_density = 250.0_real64
@@ -252,6 +381,14 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine initialize_parameters
  
  
+   !---------------------------------------------------------------------------
+   ! Initialize timestep and allocation-control parameters.
+   !
+   ! adjustment_days controls the daily fraction of the current allometric
+   ! deficit requested for correction. max_fraction limits daily structural
+   ! construction relative to initial living carbon. background_mode switches
+   ! the optional baseline structural sink on or off.
+   !---------------------------------------------------------------------------
    subroutine initialize_controls(controls, adjustment_days, max_fraction, &
                                   background_mode)
  
@@ -260,18 +397,29 @@ program test_storage_allocation_sensitivity_turnover
      real(real64), intent(in) :: max_fraction
      integer, intent(in) :: background_mode
  
+     ! One kernel call represents one day. NPP, turnover, and background demand
+     ! are scaled by this fraction of a year.
      controls%dt_years = 1.0_real64 / 365.0_real64
+     ! At each daily call, correction demand equals the current allometric
+     ! deficit divided by adjustment_days. This is a relaxation timescale, not a
+     ! guarantee that the complete deficit is removed within exactly that period.
      controls%allometric_adjustment_days = adjustment_days
+
+     ! Maximum fraction of initial living structural carbon that can be converted
+     ! into new leaf, fine-root, and sapwood biomass during one daily call.
      controls%max_allocation_fraction = max_fraction
  
      select case (background_mode)
      case (1)
-        ! Background structural demand enabled.
+        ! Enable a baseline structural sink so that an allometrically balanced
+        ! plant can continue growing when carbon is available. Shorter timescales
+        ! produce stronger background demand; sapwood is assigned a slower rate.
         controls%leaf_background_timescale_years = 3.0_real64
         controls%root_background_timescale_years = 3.0_real64
         controls%sapwood_background_timescale_years = 15.0_real64
      case (2)
-        ! Background structural demand disabled.
+        ! Disable baseline sink demand. Structural construction then occurs only
+        ! when positive allometric correction deficits are present.
         controls%leaf_background_timescale_years = 0.0_real64
         controls%root_background_timescale_years = 0.0_real64
         controls%sapwood_background_timescale_years = 0.0_real64
@@ -282,6 +430,14 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine initialize_controls
  
  
+   !---------------------------------------------------------------------------
+   ! Construct the common initial plant state.
+   !
+   ! Leaf and fine-root masses are initialized in exact leaf-root balance. The
+   ! sapwood mass is then solved numerically so that the initial state is also
+   ! approximately consistent with the pipe-model relationship at the height
+   ! implied by total stem carbon.
+   !---------------------------------------------------------------------------
    subroutine initialize_state(params, state)
  
      type(Parameters), intent(in) :: params
@@ -291,7 +447,10 @@ program test_storage_allocation_sensitivity_turnover
      real(real64) :: root_mass
      real(real64) :: sapwood_mass
      real(real64) :: heartwood_mass
-      ! Approximately pipe-balanced and leaf-root-balanced state.
+
+     ! Start from a state that is leaf-root balanced by construction. Sapwood is
+     ! solved below because height depends on total stem carbon, which makes the
+     ! pipe-balance equation implicit in sapwood mass.
      leaf_mass = 1.0_real64
      root_mass = leaf_mass / params%leaf_to_root_ratio
      heartwood_mass = 20.0_real64
@@ -304,6 +463,10 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine initialize_state
  
  
+   !---------------------------------------------------------------------------
+   ! Assemble a PlantCarbonState from explicit pool masses and diagnose height
+   ! from total stem carbon (sapwood + heartwood).
+   !---------------------------------------------------------------------------
    function build_state(params, leaf_mass, root_mass, sapwood_mass, &
                         heartwood_mass) result(state)
  
@@ -324,6 +487,13 @@ program test_storage_allocation_sensitivity_turnover
    end function build_state
  
  
+   !---------------------------------------------------------------------------
+   ! Run one complete scenario for n_days daily timesteps.
+   !
+   ! carbon_storage is updated in place by the allocation kernel. At each step,
+   ! the routine validates the result before committing the new structural state,
+   ! then accumulates fluxes and writes selected diagnostics.
+   !---------------------------------------------------------------------------
    subroutine run_scenario(scenario_id, params, controls, initial_state, &
                            npp_rate, initial_storage, trait_case, &
                            background_mode, checkpoint_unit, daily_unit, summary)
@@ -355,12 +525,19 @@ program test_storage_allocation_sensitivity_turnover
      carbon_storage = initial_storage
  
      do day = 1, n_days
- 
+
+        ! Run one daily allocation step. carbon_storage is an inout argument and
+        ! is therefore already updated when the subroutine returns. The structural
+        ! pools remain in result until the step has passed all validation checks.
         call allocate_gradual_with_storage(state, params, controls, npp_rate, &
                                            carbon_storage, result)
  
+        ! Record extrema even for a step that subsequently fails, so the output
+        ! preserves the numerical signal associated with the failure.
         call update_summary_diagnostics(summary, result)
- 
+
+        ! Stop this scenario at the first invalid timestep. Later scenarios still
+        ! run, and the final program status reports the total number of failures.
         if (.not. step_is_valid(state, result, carbon_storage, &
                                 summary%failure_reason)) then
            summary%passed = .false.
@@ -368,14 +545,19 @@ program test_storage_allocation_sensitivity_turnover
            exit
         end if
  
+        ! Only validated fluxes contribute to cumulative diagnostics.
         call accumulate_daily_fluxes(summary, result)
- 
+
+        ! Commit the validated post-allocation, post-starvation, and post-turnover
+        ! structural state for use as the next day's input.
         state%leaf_mass = result%leaf_mass_new
         state%root_mass = result%root_mass_new
         state%sapwood_mass = result%sapwood_mass_new
         state%heartwood_mass = result%heartwood_mass_new
         state%height = result%height_new
  
+        ! Diagnose storage relative to both total tracked carbon and living
+        ! structural carbon after the daily state update.
         storage_fraction_total_now = storage_fraction_total(state, carbon_storage)
         storage_fraction_living_now = storage_fraction_living(state, carbon_storage)
  
@@ -418,11 +600,14 @@ program test_storage_allocation_sensitivity_turnover
               summary%days_with_storage_above_100pct_living + 1
         end if
  
+        ! Detailed output is intentionally restricted to selected scenarios to
+        ! avoid generating an unnecessarily large daily file.
         if (should_write_daily_trace(summary, day)) then
            call write_daily_row(daily_unit, summary, params, state, result, &
                                 carbon_storage, day)
         end if
  
+        ! Checkpoints provide comparable state snapshots at fixed simulation ages.
         if (is_checkpoint_day(day)) then
            call write_checkpoint_row(checkpoint_unit, summary, params, state, &
                                      carbon_storage, day)
@@ -435,6 +620,12 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine run_scenario
  
  
+   !---------------------------------------------------------------------------
+   ! Initialize all metadata and diagnostic baselines for a scenario.
+   !
+   ! Assignment from ScenarioSummary() resets every component to its declared
+   ! default, preventing values from a previous scenario from being retained.
+   !---------------------------------------------------------------------------
    subroutine initialize_summary(summary, scenario_id, params, controls, &
                                  initial_state, npp_rate, initial_storage, &
                                  trait_case, background_mode)
@@ -449,6 +640,8 @@ program test_storage_allocation_sensitivity_turnover
      integer, intent(in) :: trait_case
      integer, intent(in) :: background_mode
  
+     ! Reset all scalar components to the default initializers declared in the
+     ! derived type before assigning scenario-specific values.
      summary = ScenarioSummary()
  
      summary%scenario_id = scenario_id
@@ -497,11 +690,17 @@ program test_storage_allocation_sensitivity_turnover
                                        initial_state%sapwood_mass))
      summary%min_living_carbon = summary%initial_living_carbon
  
+     ! Fail immediately if the parameter initialization produced a non-finite
+     ! trait value. Additional state/result checks are performed during simulation.
      if (.not. ieee_is_finite(params%sla)) error stop "Invalid SLA."
  
    end subroutine initialize_summary
  
  
+   !---------------------------------------------------------------------------
+   ! Update maximum numerical errors and maximum observed daily demand/allocation
+   ! using the current timestep result.
+   !---------------------------------------------------------------------------
    subroutine update_summary_diagnostics(summary, result)
  
      type(ScenarioSummary), intent(inout) :: summary
@@ -524,6 +723,13 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine update_summary_diagnostics
  
  
+   !---------------------------------------------------------------------------
+   ! Add the current timestep fluxes to scenario-wide cumulative totals.
+   !
+   ! These are time-integrated amounts, not final pool sizes. Positive NPP is
+   ! accumulated separately from net NPP to support the diagnostic allocation
+   ! ratio used in the summary output.
+   !---------------------------------------------------------------------------
    subroutine accumulate_daily_fluxes(summary, result)
  
      type(ScenarioSummary), intent(inout) :: summary
@@ -578,6 +784,10 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine accumulate_daily_fluxes
  
  
+   !---------------------------------------------------------------------------
+   ! Populate final states, net changes, final residuals, and derived ratios after
+   ! the simulation ends or after a validation failure stops the daily loop.
+   !---------------------------------------------------------------------------
    subroutine finalize_summary(summary, params, state, carbon_storage)
  
      type(ScenarioSummary), intent(inout) :: summary
@@ -607,6 +817,8 @@ program test_storage_allocation_sensitivity_turnover
      summary%final_storage_fraction_living = storage_fraction_living(state, &
                                                                      carbon_storage)
  
+     ! This ratio may exceed one when initial storage also finances construction;
+     ! it must not be interpreted as a strict carbon-use efficiency.
      if (summary%cumulative_positive_npp > 0.0_real64) then
         summary%structural_fraction_of_positive_npp = &
            summary%cumulative_structural_allocation / &
@@ -618,6 +830,14 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine finalize_summary
  
  
+   !---------------------------------------------------------------------------
+   ! Validate one allocation step.
+   !
+   ! The checks distinguish numerical validity from biological disequilibrium:
+   ! structural and storage balance errors must remain within tol, whereas the
+   ! leaf-root and pipe-model residuals are allowed to be non-zero because the
+   ! kernel performs gradual rather than instantaneous allometric adjustment.
+   !---------------------------------------------------------------------------
    function step_is_valid(state, result, carbon_storage, failure_reason) &
         result(is_valid)
  
@@ -715,6 +935,8 @@ program test_storage_allocation_sensitivity_turnover
    end function step_is_valid
  
  
+   ! Return true if any starvation flux or deficit diagnostic is negative beyond
+   ! numerical tolerance. All quantities in this group are defined as magnitudes.
    function any_negative_starvation_diagnostic(result) result(is_negative)
  
      type(AllocationOutput), intent(in) :: result
@@ -730,6 +952,8 @@ program test_storage_allocation_sensitivity_turnover
    end function any_negative_starvation_diagnostic
  
  
+   ! Return true if any turnover or sapwood-transfer magnitude is negative beyond
+   ! numerical tolerance.
    function any_negative_turnover_diagnostic(result) result(is_negative)
  
      type(AllocationOutput), intent(in) :: result
@@ -747,6 +971,8 @@ program test_storage_allocation_sensitivity_turnover
    end function any_negative_turnover_diagnostic
  
  
+   ! Verify that every structural state variable is finite before a timestep is
+   ! accepted.
    function all_state_values_are_finite(state) result(is_finite)
  
      type(PlantCarbonState), intent(in) :: state
@@ -761,6 +987,8 @@ program test_storage_allocation_sensitivity_turnover
    end function all_state_values_are_finite
  
  
+   ! Verify that all allocation outputs used by this driver are finite. This
+   ! catches NaN or Inf values before they propagate into subsequent timesteps.
    function result_values_are_finite(result) result(is_finite)
  
      type(AllocationOutput), intent(in) :: result
@@ -798,6 +1026,12 @@ program test_storage_allocation_sensitivity_turnover
    end function result_values_are_finite
  
  
+   !---------------------------------------------------------------------------
+   ! Invert the stem allometry to recover height from total stem carbon.
+   !
+   ! This helper reproduces the allometric relation used by the kernel so that
+   ! initial states and diagnostics are internally consistent.
+   !---------------------------------------------------------------------------
    function height_from_total_stem_carbon(params, stem_carbon_total) &
         result(height)
  
@@ -826,6 +1060,12 @@ program test_storage_allocation_sensitivity_turnover
    end function height_from_total_stem_carbon
  
  
+   !---------------------------------------------------------------------------
+   ! Diagnose pipe-model disequilibrium for a state:
+   !   residual = leaf area - LATOSA * sapwood area inferred from sapwood mass.
+   ! Positive values indicate relatively more leaf area; negative values indicate
+   ! relatively more sapwood area. The residual is not a carbon-balance error.
+   !---------------------------------------------------------------------------
    function pipe_residual_for_state(params, state) result(pipe_residual)
  
      type(Parameters), intent(in) :: params
@@ -849,6 +1089,9 @@ program test_storage_allocation_sensitivity_turnover
    end function pipe_residual_for_state
  
  
+   ! Diagnose leaf-root disequilibrium. Positive values indicate relatively more
+   ! leaf carbon than prescribed by the target ratio; negative values indicate
+   ! relatively more fine-root carbon.
    function leaf_root_residual_for_state(params, state) result(leaf_root_residual)
  
      type(Parameters), intent(in) :: params
@@ -861,6 +1104,8 @@ program test_storage_allocation_sensitivity_turnover
    end function leaf_root_residual_for_state
  
  
+   ! Return living structural carbon used by the daily construction limiter:
+   ! leaf + fine root + sapwood. Heartwood and labile storage are excluded.
    function living_carbon_of_state(state) result(living_carbon)
  
      type(PlantCarbonState), intent(in) :: state
@@ -871,6 +1116,8 @@ program test_storage_allocation_sensitivity_turnover
    end function living_carbon_of_state
  
  
+   ! Return total structural carbon: leaf + fine root + sapwood + heartwood.
+   ! Labile storage is excluded and must be added separately for total plant carbon.
    function structural_carbon_of_state(state) result(structural_carbon)
  
      type(PlantCarbonState), intent(in) :: state
@@ -882,6 +1129,9 @@ program test_storage_allocation_sensitivity_turnover
    end function structural_carbon_of_state
  
  
+   ! Return storage as a fraction of total tracked plant carbon:
+   ! storage / (structural carbon + storage). This metric is bounded between zero
+   ! and one when all pools are non-negative.
    function storage_fraction_total(state, carbon_storage) result(fraction)
  
      type(PlantCarbonState), intent(in) :: state
@@ -900,6 +1150,9 @@ program test_storage_allocation_sensitivity_turnover
    end function storage_fraction_total
  
  
+   ! Return storage relative to living structural carbon:
+   ! storage / (leaf + fine root + sapwood). Unlike storage_fraction_total, this
+   ! ratio can exceed one when storage is larger than all living structural pools.
    function storage_fraction_living(state, carbon_storage) result(fraction)
  
      type(PlantCarbonState), intent(in) :: state
@@ -918,6 +1171,13 @@ program test_storage_allocation_sensitivity_turnover
    end function storage_fraction_living
  
  
+   !---------------------------------------------------------------------------
+   ! Solve for the sapwood mass that makes the initial pipe-model residual zero.
+   !
+   ! The solver first expands an upper bound until the residual changes sign, then
+   ! applies bisection. Height changes with total stem carbon, so sapwood mass
+   ! cannot be obtained from a single direct linear expression here.
+   !---------------------------------------------------------------------------
    function solve_sapwood_for_pipe_balance(params, leaf_mass, heartwood_mass) &
         result(sapwood_mass)
  
@@ -931,9 +1191,11 @@ program test_storage_allocation_sensitivity_turnover
      real(real64) :: f_mid
      integer :: iter
  
+     ! Begin with a strictly positive lower bound and expand the upper bound until
+     ! the root is bracketed by residuals with opposite signs.
      left = 1.0e-12_real64
      right = 1.0_real64
- 
+
      do while (pipe_balance_function(params, leaf_mass, heartwood_mass, &
                                      right) > 0.0_real64)
         right = right * 2.0_real64
@@ -942,6 +1204,8 @@ program test_storage_allocation_sensitivity_turnover
         end if
      end do
  
+     ! Bisect the bracket until the pipe residual is negligible or the maximum
+     ! number of iterations is reached.
      do iter = 1, 300
         mid = 0.5_real64 * (left + right)
         f_mid = pipe_balance_function(params, leaf_mass, heartwood_mass, mid)
@@ -960,6 +1224,8 @@ program test_storage_allocation_sensitivity_turnover
    end function solve_sapwood_for_pipe_balance
  
  
+   ! Evaluate the pipe-model residual for a candidate sapwood mass. This scalar
+   ! function is used by the bisection solver above.
    function pipe_balance_function(params, leaf_mass, heartwood_mass, &
                                   sapwood_mass) result(residual)
  
@@ -988,6 +1254,9 @@ program test_storage_allocation_sensitivity_turnover
    end function pipe_balance_function
  
  
+   ! Return true on the fixed reporting checkpoints at the end of years 1, 5,
+   ! and 10. These dates assume 365-day years and should be updated if n_days or
+   ! the timestep convention changes.
    function is_checkpoint_day(day) result(is_checkpoint)
  
      integer, intent(in) :: day
@@ -1000,6 +1269,8 @@ program test_storage_allocation_sensitivity_turnover
    end function is_checkpoint_day
  
  
+   ! Convert a recognized checkpoint day to its nominal simulation year. Return
+   ! -1 for a day that is not one of the predefined checkpoints.
    function checkpoint_year_from_day(day) result(year)
  
      integer, intent(in) :: day
@@ -1019,6 +1290,14 @@ program test_storage_allocation_sensitivity_turnover
    end function checkpoint_year_from_day
  
  
+   !---------------------------------------------------------------------------
+   ! Select a small subset of scenarios for detailed time-series output.
+   !
+   ! Rows are written every 30 days and on the final day only when all selection
+   ! criteria below are satisfied. Note that the current active initial storage
+   ! value (0.5) is not selected, so the daily CSV will contain only its header
+   ! unless selected_storage or the active scenario values are changed.
+   !---------------------------------------------------------------------------
    function should_write_daily_trace(summary, day) result(write_trace)
  
      type(ScenarioSummary), intent(in) :: summary
@@ -1027,6 +1306,8 @@ program test_storage_allocation_sensitivity_turnover
      logical :: selected_npp
      logical :: selected_storage
  
+     ! Explicitly select representative NPP and storage levels. Values not listed
+     ! here are omitted from the detailed daily output even if they are simulated.
      selected_npp = abs(summary%npp_rate + 0.5_real64) < tiny_positive .or. &
                     abs(summary%npp_rate - 0.5_real64) < tiny_positive .or. &
                     abs(summary%npp_rate - 3.5_real64) < tiny_positive .or. &
@@ -1049,6 +1330,8 @@ program test_storage_allocation_sensitivity_turnover
    end function should_write_daily_trace
  
  
+   ! Write column names for the one-row-per-scenario summary file. Column order
+   ! must remain synchronized with write_summary_row.
    subroutine write_summary_header(summary_unit)
  
      integer, intent(in) :: summary_unit
@@ -1092,6 +1375,7 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine write_summary_header
  
  
+   ! Write one complete scenario summary in the same order as the header above.
    subroutine write_summary_row(summary_unit, summary)
  
      integer, intent(in) :: summary_unit
@@ -1104,6 +1388,8 @@ program test_storage_allocation_sensitivity_turnover
         status = "FAIL"
      end if
  
+     ! The unlimited-repeat format writes mixed numeric and character fields
+     ! without requiring a manually maintained format descriptor for every column.
      write(summary_unit,'(*(g0))') &
        summary%scenario_id, ",", trim(status), ",", summary%fail_day, ",", &
        trim(summary%failure_reason), ",", summary%trait_case, ",", &
@@ -1162,6 +1448,8 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine write_summary_row
  
  
+   ! Write column names for the checkpoint file. Column order must remain
+   ! synchronized with write_checkpoint_row.
    subroutine write_checkpoint_header(checkpoint_unit)
  
      integer, intent(in) :: checkpoint_unit
@@ -1197,6 +1485,7 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine write_checkpoint_header
  
  
+   ! Write state, cumulative fluxes, and diagnostics at a predefined checkpoint.
    subroutine write_checkpoint_row(checkpoint_unit, summary, params, state, &
                                    carbon_storage, day)
  
@@ -1224,6 +1513,8 @@ program test_storage_allocation_sensitivity_turnover
         status = "FAIL"
      end if
  
+     ! Recalculate state-dependent diagnostics at the checkpoint rather than
+     ! relying only on the final values stored in ScenarioSummary.
      checkpoint_year = checkpoint_year_from_day(day)
      current_leaf_root_residual = leaf_root_residual_for_state(params, state)
      current_pipe_residual = pipe_residual_for_state(params, state)
@@ -1233,6 +1524,8 @@ program test_storage_allocation_sensitivity_turnover
      current_structural_carbon = structural_carbon_of_state(state)
      current_total_carbon = current_structural_carbon + carbon_storage
  
+     ! As in the final summary, this is a diagnostic index and may exceed one
+     ! when construction is partly financed by initial storage.
      if (summary%cumulative_positive_npp > 0.0_real64) then
         structural_fraction_at_checkpoint = &
            summary%cumulative_structural_allocation / &
@@ -1290,6 +1583,8 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine write_checkpoint_row
  
  
+   ! Write column names for the selected detailed time-series file. Column order
+   ! must remain synchronized with write_daily_row.
    subroutine write_daily_header(daily_unit)
  
      integer, intent(in) :: daily_unit
@@ -1316,6 +1611,8 @@ program test_storage_allocation_sensitivity_turnover
    end subroutine write_daily_header
  
  
+   ! Write one selected post-step plant state together with the fluxes and
+   ! diagnostics generated during that same timestep.
    subroutine write_daily_row(daily_unit, summary, params, state, result, &
                               carbon_storage, day)
  
@@ -1327,6 +1624,8 @@ program test_storage_allocation_sensitivity_turnover
      real(real64), intent(in) :: carbon_storage
      integer, intent(in) :: day
  
+     ! state and carbon_storage are post-step values, while result contains the
+     ! fluxes and balance diagnostics that produced that post-step state.
      write(daily_unit,'(*(g0))') &
        summary%scenario_id, ",", day, ",", &
        real(day, real64) / 365.0_real64, ",", &
@@ -1366,5 +1665,5 @@ program test_storage_allocation_sensitivity_turnover
  
    end subroutine write_daily_row
  
- end program test_storage_allocation_sensitivity_turnover
+ end program run_carbon_allocation_offline
  
