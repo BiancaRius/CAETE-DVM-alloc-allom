@@ -82,6 +82,20 @@ all_scenarios <- bind_rows(
 # Change the name of the column "date" to "year"
 names(all_scenarios)[names(all_scenarios) == "date"] <- "year"
 
+
+###############################################################
+# Remove invalid years after collapse in the 2-year scenario
+
+last_valid_year_2y <- 2007
+
+all_scenarios <- all_scenarios %>%
+  filter(
+    as.character(scenario) != "2y" |
+      year <= last_valid_year_2y
+  )
+
+###############################################################
+
 # Define the biogeochemical processes to be analyzed
 # IMPORTANT: Edit this vector according to the exact column names in your tables.
 process_vars <- c(
@@ -175,123 +189,6 @@ analysis_data <- analysis_data %>%
     )
   ) %>%
   arrange(scenario, process, year)
-
-###############################################################
-
-###############################################################
-# Plot anomalies for selected processes (main figure)
-
-facet_labels <- c(
-  "8y" = "8-Year Interval",
-  "6y" = "6-Year Interval",
-  "4y" = "4-Year Interval",
-  "2y" = "2-Year Interval"
-)
-
-process_colors <- c(
-  "npp" = "#004B8D",      
-  "evapm" = "#00874E",    
-  "ctotal" = "#D9A000",   
-  "ls" = "#BF4A00"        
-)
-
-# Select only the processes that will be shown in this plot
-selected_processes <- c("npp", "evapm", "ctotal", "ls")
-
-# Prepare data for plotting only the selected processes
-plot_data <- analysis_data %>%
-  filter(process %in% selected_processes) %>%
-  # Group by scenario and process to evaluate the timeline sequentially
-  group_by(scenario, process) %>%
-  mutate(
-    # Create a cumulative flag that turns TRUE once the system collapses
-    # in the '2y' scenario (anomaly drops to -1 or reaches 1).
-    # Using 0.99 accounts for potential floating-point imprecision.
-    has_collapsed = cumany(scenario == "2y" & abs(year) >2007),
-    
-    # Replace the relative anomaly with NA from the collapse point onwards
-    # so ggplot stops drawing the line
-    relative_anomaly = if_else(has_collapsed, NA_real_, relative_anomaly)
-  ) %>%
-  ungroup() %>%
-  mutate(
-    process = factor(process, levels = selected_processes),
-    scenario_label = factor(
-      scenario,
-      levels = names(facet_labels),
-      labels = facet_labels
-    )
-  )
-
-anomaly_plot <- ggplot(
-  plot_data,
-  aes(
-    x = year,
-    y = relative_anomaly,
-    color = process,
-    group = process
-  )
-) +
-  # Zero reference line
-  geom_hline(
-    yintercept = 0,
-    linetype = "dashed",
-    linewidth = 0.5,
-    color = "grey60"
-  ) +
-  geom_line(
-    linewidth = 1.0,
-    na.rm = TRUE
-  ) +
-  facet_wrap(
-    ~ scenario_label,
-    ncol = 2,
-    strip.position = "top"
-  ) +
-  scale_color_manual(
-    name = NULL,
-    values = process_colors[selected_processes],
-    labels = process_labels[selected_processes]
-  ) +
-  scale_x_continuous(
-    breaks = seq(1980, 2015, by = 5)
-  ) +
-  labs(
-    x = "Year",
-    y = "Relative anomaly"
-  ) +
-  theme_bw(base_size = 14) +
-  theme(
-    legend.position = "bottom",
-    legend.text = element_text(face = "bold", size = 12),
-    
-    # Facet titles
-    strip.background = element_blank(),
-    strip.text = element_text(
-      face = "bold",
-      size = 13,
-      hjust = 0.05,
-      margin = margin(t = 10, b = 5)
-    ),
-    
-    panel.grid.minor = element_blank(),
-    panel.grid.major = element_line(color = "grey92"),
-    
-    axis.title = element_text(face = "bold"),
-    axis.title.y = element_text(margin = margin(r = 10)),
-    axis.title.x = element_text(margin = margin(t = 10)),
-    
-    # Rotate x-axis labels
-    axis.text.x = element_text(
-      angle = 45,
-      hjust = 1
-    ),
-    
-    panel.border = element_rect(color = "grey40", fill = NA, linewidth = 0.8)
-  ) +
-  guides(color = guide_legend(override.aes = list(linewidth = 1.5)))
-
-anomaly_plot
 
 ###############################################################
 
@@ -392,42 +289,50 @@ response_windows <- response_windows %>%
     response_window_complete =
       response_end_expected <= last_simulation_year
   )
-# Uncomment if something changed in this table
+#Uncomment if something changed in this table
 #write_csv(response_windows, "~/Desktop/CAETE-DVM-alloc-allom/scripts/recovery_rate_analysis/response_windows.csv" )
 ###############################################################
 
+
 ###############################################################
-# Now let's calculate the mximum déficit for each scenario x variable x drought event
+# Calculate event metrics for all selected processes
+###############################################################
 
-# NPP
-# Select NPP data from all drought scenarios
+# Use every variable previously defined in process_vars
+summary_processes <- process_vars
 
-npp_all_scenarios <- analysis_data %>%
+# Numerical tolerance used throughout the calculations
+metric_tolerance <- 1e-10
+
+
+###############################################################
+# Combine all processes with their response windows
+
+all_processes_response_data <- analysis_data %>%
   filter(
-    process == "npp"
+    process %in% summary_processes
   ) %>%
   mutate(
     scenario = as.character(scenario)
-  )
-
-# Combine NPP anomalies with the response windows
-npp_response_data <- npp_all_scenarios %>%
-  left_join(
-    response_windows,
+  ) %>%
+  inner_join(
+    response_windows %>%
+      mutate(
+        scenario = as.character(scenario)
+      ),
     by = "scenario",
     relationship = "many-to-many"
-  )
-
-# Keep only years belonging to each response window
-npp_response_data <- npp_response_data %>%
+  ) %>%
   filter(
     year >= response_start,
     year <= response_end
   )
 
-# Calculate the maximum NPP deficit for each drought event
-npp_maximum_deficit <- npp_response_data %>%
-  
+
+###############################################################
+# Identify the maximum deficit within each response window
+
+all_processes_maximum_deficit <- all_processes_response_data %>%
   group_by(
     scenario,
     process,
@@ -438,17 +343,13 @@ npp_maximum_deficit <- npp_response_data %>%
     response_end,
     response_window_complete
   ) %>%
-  
-  # Select the minimum relative anomaly within each response window
   slice_min(
     order_by = relative_anomaly,
     n = 1,
     with_ties = FALSE,
     na_rm = TRUE
   ) %>%
-  
   ungroup() %>%
-  
   transmute(
     scenario,
     process,
@@ -459,7 +360,7 @@ npp_maximum_deficit <- npp_response_data %>%
     response_end,
     response_window_complete,
     
-    # Year when the minimum anomaly occurred
+    # Year of maximum deficit
     t_min = year,
     
     # Signed minimum anomaly
@@ -472,122 +373,39 @@ npp_maximum_deficit <- npp_response_data %>%
       0
     ),
     
-    # Number of years from the drought to the maximum deficit
-    time_to_maximum_deficit = t_min - response_start
-  )
-
-# Define scenario labels and their plotting order
-
-npp_maximum_deficit <- npp_maximum_deficit %>%
-  mutate(
-    scenario_label = factor(
-      scenario,
-      levels = c("8y", "6y", "4y", "2y"),
-      labels = c(
-        "8-Year Interval",
-        "6-Year Interval",
-        "4-Year Interval",
-        "2-Year Interval"
-      )
-    ),
-    
-    window_status = if_else(
-      response_window_complete,
-      "Complete window",
-      "Incomplete window"
+    # Time to maximum deficit, defined only when a deficit occurred
+    time_to_maximum_deficit = if_else(
+      maximum_deficit > metric_tolerance,
+      t_min - response_start,
+      NA_real_
     )
   )
+
 
 ###############################################################
-# Plot the time required to reach the maximum NPP deficit
-# for all drought scenarios
+# Create a lookup table for the pre-event anomalies
 
-npp_time_to_deficit_plot <- ggplot(
-  npp_maximum_deficit,
-  aes(
-    x = event_year,
-    y = time_to_maximum_deficit,
-    fill = window_status
-  )
-) +
-  geom_col(
-    width = 1.3
-  ) +
-  geom_text(
-    aes(label = time_to_maximum_deficit),
-    vjust = -0.4,
-    size = 3.5
-  ) +
-  facet_wrap(
-    ~ scenario_label,
-    ncol = 2
-  ) +
-  scale_fill_manual(
-    name = NULL,
-    values = c(
-      "Complete window" = "#004B8D",
-      "Incomplete window" = "grey65"
-    )
-  ) +
-  scale_x_continuous(
-    breaks = seq(1980, 2016, by = 4)
-  ) +
-  scale_y_continuous(
-    breaks = 0:7,
-    expand = expansion(mult = c(0, 0.12))
-  ) +
-  labs(
-    title = "Time to maximum NPP deficit",
-    x = "Drought-event year",
-    y = "Time to maximum deficit (years)"
-  ) +
-  theme_bw(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold"),
-    axis.title = element_text(face = "bold"),
-    axis.text.x = element_text(
-      angle = 45,
-      hjust = 1
-    ),
-    legend.position = "bottom",
-    panel.grid.minor = element_blank(),
-    strip.background = element_blank(),
-    strip.text = element_text(
-      face = "bold"
-    )
-  )
-
-npp_time_to_deficit_plot
-
-###############################################################
-# Create a lookup table for pre-event NPP anomalies
-# The pre-event anomaly will be used to calculate event-specific incremental loss
-npp_anomaly_lookup <- analysis_data %>%
+all_processes_anomaly_lookup <- analysis_data %>%
   filter(
-    process == "npp"
+    process %in% summary_processes
   ) %>%
   transmute(
     scenario = as.character(scenario),
     process,
-    
-    # This year will be matched with the pre-event year
     pre_event_year = year,
-    
-    # Relative anomaly observed in that year
     anomaly_pre = relative_anomaly
   )
 
-# Define the year immediately preceding each drought event
-npp_event_metrics <- npp_maximum_deficit %>%
-  mutate(
-    scenario = as.character(scenario),
-    pre_event_year = event_year - 1
-  )
 
-# Add the anomaly observed immediately before each drought event (pre-event anomaly)
-npp_event_metrics <- npp_event_metrics %>%
+###############################################################
+# Add the pre-event anomaly
+
+all_processes_event_metrics <- all_processes_maximum_deficit %>%
+  mutate(
+    pre_event_year = event_year - 1
+  ) %>%
   left_join(
-    npp_anomaly_lookup,
+    all_processes_anomaly_lookup,
     by = c(
       "scenario",
       "process",
@@ -595,48 +413,57 @@ npp_event_metrics <- npp_event_metrics %>%
     )
   )
 
-# Calculate the signed anomaly change after each drought event 
-# note this metric uses the minimum anomaly, that is the maximum 
-# deficit in relation to the control
-npp_event_metrics <- npp_event_metrics %>%
-  mutate(
-    incremental_anomaly_change =
-      anomaly_min - anomaly_pre
+###############################################################
+# Identify the anomaly during the drought-event year
+
+all_processes_event_year_anomaly <- all_processes_response_data %>%
+  filter(
+    year == event_year
+  ) %>%
+  transmute(
+    scenario,
+    process,
+    event_id,
+    event_year,
+    anomaly_event_year = relative_anomaly
   )
 
-# Just make the previous variable as a positive magnitude
-# It separates the legacy effect from the impact of this specific 
-# drought event
-npp_event_metrics <- npp_event_metrics %>%
-  mutate(
-    event_specific_incremental_loss = pmax(
-      0,
-      anomaly_pre - anomaly_min
+
+# Add the drought-event-year anomaly to the event table
+
+all_processes_event_metrics <- all_processes_event_metrics %>%
+  left_join(
+    all_processes_event_year_anomaly,
+    by = c(
+      "scenario",
+      "process",
+      "event_id",
+      "event_year"
     )
   )
-###############################################################
 
 ###############################################################
-# Identify the NPP anomaly at the end of each response window
-npp_end_anomaly <- npp_response_data %>%
+# Identify anomaly at the end of each response window
+
+all_processes_end_anomaly <- all_processes_response_data %>%
   filter(
     year == response_end
   ) %>%
   transmute(
-    scenario = as.character(scenario),
+    scenario,
     process,
     event_id,
     event_year,
     response_end,
-    
-    # Relative anomaly at the end of the response window
     anomaly_end = relative_anomaly
   )
 
-# Add the end-of-window anomaly to the event metrics table
-npp_event_metrics <- npp_event_metrics %>%
+
+# Add end-of-window anomaly to the event table
+
+all_processes_event_metrics <- all_processes_event_metrics %>%
   left_join(
-    npp_end_anomaly,
+    all_processes_end_anomaly,
     by = c(
       "scenario",
       "process",
@@ -645,226 +472,75 @@ npp_event_metrics <- npp_event_metrics %>%
       "response_end"
     )
   )
-###############################################################
 
 
 ###############################################################
-# Calculate the TOTAL residual NPP deficit at the end of each
-# response window in relation to the baseline
+# Calculate impact and recovery metrics
 
-npp_event_metrics <- npp_event_metrics %>%
+all_processes_event_metrics <- all_processes_event_metrics %>%
   mutate(
-    residual_deficit = pmax(
+    # Signed change relative to the pre-event condition
+    incremental_anomaly_change =
+      anomaly_min - anomaly_pre,
+    
+    # Signed change during the drought-event year
+    initial_anomaly_change =
+      anomaly_event_year - anomaly_pre,
+    
+    # Positive loss occurring during the drought-event year
+    initial_event_year_loss = pmax(
       0,
-      -anomaly_end
-    )
-  )
-
-###############################################################
-
-###############################################################
-# Calculate the amount recovered after the minimum anomaly
-
-# Numerical tolerance used to identify negligible incremental losses
-recovery_tolerance <- 1e-10
-# Calculate event-specific recovery metrics
-
-npp_event_metrics <- npp_event_metrics %>%
-  mutate(
-    # Amount recovered between the minimum anomaly and the end
-    # of the response window
+      anomaly_pre - anomaly_event_year
+    ),
+    
+    # Positive magnitude of the loss caused by the current event
+    event_specific_incremental_loss = pmax(
+      0,
+      anomaly_pre - anomaly_min
+    ),
+    
+    # Amount recovered after the maximum deficit
     recovered_amount =
       anomaly_end - anomaly_min,
     
-    # Fraction of the event-specific incremental loss that was recovered
-    #
-    # 0   = no recovery
-    # 1   = complete recovery to the pre-event condition
-    # < 0 = further deterioration after the minimum
-    # > 1 = recovery beyond the pre-event condition
+    # Fraction of the event-specific loss recovered
     event_specific_recovery_fraction = if_else(
-      event_specific_incremental_loss > loss_tolerance,
+      event_specific_incremental_loss > metric_tolerance,
       recovered_amount / event_specific_incremental_loss,
       NA_real_
-    )
-  )
-
-# Prepare data for plotting
-npp_recovery_plot_data <- npp_event_metrics %>%
-  mutate(
-    recovery_percentage =
-      event_specific_recovery_fraction * 100,
-    
-    scenario_label = factor(
-      scenario,
-      levels = c("8y", "6y", "4y", "2y"),
-      labels = c(
-        "8-Year Interval",
-        "6-Year Interval",
-        "4-Year Interval",
-        "2-Year Interval"
-      )
     ),
     
-    window_status = if_else(
-      response_window_complete,
-      "Complete window",
-      "Incomplete window"
-    )
-  )
-
-
-# Plot event-specific recovery
-
-npp_recovery_plot <- ggplot(
-  data = npp_recovery_plot_data,
-  aes(
-    x = event_year,
-    y = recovery_percentage
-  )
-) +
-  
-  # Connect only events with complete response windows
-  geom_line(
-    data = npp_recovery_plot_data %>%
-      filter(
-        response_window_complete,
-        !is.na(recovery_percentage)
-      ),
-    aes(group = 1),
-    color = "grey55",
-    linewidth = 0.8
-  ) +
-  
-  # Plot only events for which recovery could be calculated
-  geom_point(
-    data = npp_recovery_plot_data %>%
-      filter(!is.na(recovery_percentage)),
-    aes(color = window_status),
-    size = 3
-  ) +
-  
-  # Complete recovery to the pre-event condition
-  geom_hline(
-    yintercept = 100,
-    linetype = "dashed",
-    color = "grey35"
-  ) +
-  
-  # No recovery after the minimum anomaly
-  geom_hline(
-    yintercept = 0,
-    color = "grey70"
-  ) +
-  
-  facet_wrap(
-    ~ scenario_label,
-    ncol = 2
-  ) +
-  
-  scale_color_manual(
-    name = NULL,
-    values = c(
-      "Complete window" = "#004B8D",
-      "Incomplete window" = "grey65"
-    )
-  ) +
-  
-  scale_x_continuous(
-    breaks = seq(1980, 2016, by = 4)
-  ) +
-  
-  scale_y_continuous(
-    labels = scales::label_number(
-      accuracy = 1,
-      suffix = "%"
-    )
-  ) +
-  
-  labs(
-    title = "Event-specific NPP recovery",
-    x = "Drought-event year",
-    y = "Recovery of event-specific incremental loss"
-  ) +
-  
-  theme_bw(base_size = 14) +
-  
-  theme(
-    plot.title = element_text(face = "bold"),
-    axis.title = element_text(face = "bold"),
-    axis.text.x = element_text(
-      angle = 45,
-      hjust = 1
+    # Remaining deficit relative to the control
+    residual_deficit = pmax(
+      0,
+      -anomaly_end
     ),
-    legend.position = "bottom",
-    panel.grid.minor = element_blank(),
-    strip.background = element_blank(),
-    strip.text = element_text(face = "bold")
-  )
-
-
-# Display the plot
-npp_recovery_plot
-###############################################################
-
-
-###############################################################
-# Classify event-specific recovery at the end of each
-# response window
-
-npp_event_metrics <- npp_event_metrics %>%
-  mutate(
+    
+    # Recovery classification
     event_specific_recovery_status = case_when(
+      is.na(event_specific_incremental_loss) |
+        is.na(recovered_amount) ~
+        "Not calculated: missing data",
       
-      # Recovery cannot be calculated when no incremental
-      # loss occurred
-      is.na(event_specific_recovery_fraction) ~
+      event_specific_incremental_loss <= metric_tolerance ~
         "No incremental loss",
       
-      # The pre-event condition was reached or exceeded
       event_specific_recovery_fraction >=
-        (1 - recovery_tolerance) ~
+        (1 - metric_tolerance) ~
         "Complete recovery",
       
-      # Part of the incremental loss was recovered
       event_specific_recovery_fraction >
-        recovery_tolerance ~
+        metric_tolerance ~
         "Partial recovery",
       
-      # No meaningful improvement occurred after the minimum
       TRUE ~
         "No recovery"
-    )
-  )
-
-npp_event_metrics %>%
-  select(
-    scenario,
-    event_year,
-    anomaly_pre,
-    anomaly_min,
-    anomaly_end,
-    event_specific_incremental_loss,
-    recovered_amount,
-    event_specific_recovery_fraction,
-    event_specific_recovery_status,
-    response_window_complete
-  )
-
-npp_event_metrics %>%
-  count(
-    scenario,
-    event_specific_recovery_status
-  )
-
-
-###############################################################
-# Calculate the event-specific half-recovery target
-
-npp_event_metrics <- npp_event_metrics %>%
-  mutate(
+    ),
+    
+    # Target corresponding to recovery of 50% of the
+    # event-specific incremental loss
     half_recovery_target = if_else(
-      event_specific_incremental_loss > loss_tolerance,
+      event_specific_incremental_loss > metric_tolerance,
       
       anomaly_min +
         0.5 * (anomaly_pre - anomaly_min),
@@ -873,12 +549,13 @@ npp_event_metrics <- npp_event_metrics %>%
     )
   )
 
+
 ###############################################################
 # Identify the first year in which half recovery was reached
 
-npp_half_recovery_results <- npp_response_data %>%
+all_processes_half_recovery <- all_processes_response_data %>%
   left_join(
-    npp_event_metrics %>%
+    all_processes_event_metrics %>%
       select(
         scenario,
         process,
@@ -920,22 +597,13 @@ npp_half_recovery_results <- npp_response_data %>%
     half_recovery_time
   )
 
-###############################################################
-# Add half-recovery results to the main event table
 
-npp_event_metrics <- npp_event_metrics %>%
-  select(
-    -any_of(
-      c(
-        "half_recovery_year",
-        "half_recovery_time",
-        "half_recovery_observed",
-        "half_recovery_status"
-      )
-    )
-  ) %>%
+###############################################################
+# Add half-recovery results to the event table
+
+all_processes_event_metrics <- all_processes_event_metrics %>%
   left_join(
-    npp_half_recovery_results,
+    all_processes_half_recovery,
     by = c(
       "scenario",
       "process",
@@ -947,7 +615,10 @@ npp_event_metrics <- npp_event_metrics %>%
       !is.na(half_recovery_year),
     
     half_recovery_status = case_when(
-      is.na(half_recovery_target) ~
+      is.na(event_specific_incremental_loss) ~
+        "Not calculated: missing data",
+      
+      event_specific_incremental_loss <= metric_tolerance ~
         "Not applicable: no incremental loss",
       
       half_recovery_observed ~
@@ -960,194 +631,27 @@ npp_event_metrics <- npp_event_metrics %>%
         "Not observed before next drought"
     )
   )
+
+
 ###############################################################
+# Final summary table containing all processes
 
-
-# Prepare half-recovery time data for plotting
-
-npp_half_recovery_plot_data <- npp_event_metrics %>%
+all_processes_summary_table <- all_processes_event_metrics %>%
   mutate(
-    # Time available to observe recovery after the minimum anomaly
-    time_available_after_min =
-      response_end - t_min,
-    
-    # Use the observed half-recovery time when available.
-    # Otherwise, use the available follow-up time to show censoring.
-    half_recovery_plot_time = if_else(
-      half_recovery_observed,
-      half_recovery_time,
-      time_available_after_min
+    process = factor(
+      process,
+      levels = summary_processes
     ),
     
-    # Define the observation status
-    half_recovery_plot_status = case_when(
-      half_recovery_observed ~
-        "Half recovery observed",
-      
-      !response_window_complete ~
-        "Not observed: simulation ended",
-      
-      TRUE ~
-        "Not observed before next drought"
-    ),
-    
-    # Define labels for observed and censored events
-    half_recovery_label = case_when(
-      half_recovery_observed ~
-        as.character(half_recovery_time),
-      
-      TRUE ~
-        paste0(">", time_available_after_min)
-    )
-  ) %>%
-  
-  # Remove events without an incremental loss
-  filter(
-    !is.na(half_recovery_target)
-  )
-
-###############################################################
-# Plot event-specific NPP half-recovery time
-
-npp_half_recovery_plot <- ggplot(
-  npp_half_recovery_plot_data,
-  aes(
-    x = event_year,
-    y = half_recovery_plot_time,
-    color = half_recovery_plot_status,
-    shape = half_recovery_plot_status
-  )
-) +
-  
-  geom_point(
-    size = 3.2
-  ) +
-  
-  geom_text(
-    aes(label = half_recovery_label),
-    vjust = -0.8,
-    size = 3.5,
-    show.legend = FALSE
-  ) +
-  
-  facet_wrap(
-    ~ scenario_label,
-    ncol = 2
-  ) +
-  
-  scale_color_manual(
-    name = NULL,
-    values = c(
-      "Half recovery observed" = "#0072B2",
-      "Not observed before next drought" = "#D55E00",
-      "Not observed: simulation ended" = "grey60"
-    )
-  ) +
-  
-  scale_shape_manual(
-    name = NULL,
-    values = c(
-      "Half recovery observed" = 16,
-      "Not observed before next drought" = 17,
-      "Not observed: simulation ended" = 15
-    )
-  ) +
-  
-  scale_x_continuous(
-    breaks = seq(1980, 2016, by = 4)
-  ) +
-  
-  scale_y_continuous(
-    breaks = 0:7,
-    expand = expansion(mult = c(0.05, 0.15))
-  ) +
-  
-  labs(
-    title = "Event-specific NPP half-recovery time",
-    x = "Drought-event year",
-    y = "Time after maximum deficit (years)"
-  ) +
-  
-  theme_bw(base_size = 14) +
-  
-  theme(
-    plot.title = element_text(face = "bold"),
-    axis.title = element_text(face = "bold"),
-    axis.text.x = element_text(
-      angle = 45,
-      hjust = 1
-    ),
-    legend.position = "bottom",
-    panel.grid.minor = element_blank(),
-    strip.background = element_blank(),
-    strip.text = element_text(face = "bold")
-  )
-
-npp_half_recovery_plot
-
-###############################################################
-# Long term anomaly analysis
-# Plot the NPP condition immediately before each drought event
-
-npp_pre_event_plot <- npp_event_metrics %>%
-  ggplot(
-    aes(
-      x = event_year,
-      y = anomaly_pre
-    )
-  ) +
-  geom_hline(
-    yintercept = 0,
-    linetype = "dashed",
-    color = "grey40"
-  ) +
-  geom_line(
-    aes(group = scenario),
-    color = "#009E73",
-    linewidth = 0.8
-  ) +
-  geom_point(
-    color = "#009E73",
-    size = 1.5
-  ) +
-  facet_wrap(
-    ~ scenario_label,
-    ncol = 2
-  ) +
-  scale_x_continuous(
-    breaks = seq(1980, 2015, by = 5)
-  ) +
-  labs(
-    title = "Pre-event NPP anomaly across successive droughts",
-    x = "Drought-event year",
-    y = "NPP anomaly before the drought"
-  ) +
-  theme_bw(base_size = 14) +
-  theme(
-    plot.title = element_text(face = "bold"),
-    axis.title = element_text(face = "bold"),
-    axis.text.x = element_text(
-      angle = 45,
-      hjust = 1
-    ),
-    panel.grid.minor = element_blank(),
-    strip.background = element_blank(),
-    strip.text = element_text(face = "bold")
-  )
-
-npp_pre_event_plot
-
-###############################################################
-# Organize all NPP event metrics into a single analysis table
-
-npp_summary_table <- npp_event_metrics %>%
-  mutate(
     scenario = factor(
       scenario,
       levels = c("8y", "6y", "4y", "2y")
     )
   ) %>%
   select(
+    # Process identification
+    process,
+    
     # Event identification
     scenario,
     event_id,
@@ -1174,26 +678,1218 @@ npp_summary_table <- npp_event_metrics %>%
     half_recovery_target,
     half_recovery_year,
     half_recovery_time,
-    half_recovery_status
+    half_recovery_status,
+    
+    anomaly_event_year,
+    initial_anomaly_change,
+    initial_event_year_loss
   ) %>%
   arrange(
+    process,
     scenario,
     event_year
   )
 
-###############################################################
-# Inspect all NPP events in the 8-year drought scenario
-
-npp_summary_table %>%
-  filter(
-    scenario == "8y"
+all_processes_summary_table %>%
+  count(
+    process,
+    scenario,
+    name = "number_of_events"
   ) %>%
   print(
-    n = Inf,
-    width = Inf
+    n = Inf
   )
 
-#Uncomment if something changed
-#write_csv(npp_summary_table, "~/Desktop/CAETE-DVM-alloc-allom/scripts/recovery_rate_analysis/npp_summary_table.csv" )
+# write_csv(
+#   all_processes_summary_table,
+#   "~/Desktop/CAETE-DVM-alloc-allom/scripts/recovery_rate_analysis/all_processes_summary_table.csv"
+# )
 
+###############################################################
+# Annual anomaly trajectories for the main ecosystem variables
+
+selected_processes <- c(
+  "npp",
+  "evapm",
+  "ctotal",
+  "ls"
+)
+
+annual_anomaly_plot_data <- analysis_data %>%
+  filter(
+    process %in% selected_processes
+  ) %>%
+  mutate(
+    # Order and labels of drought-frequency scenarios
+    scenario = factor(
+      scenario,
+      levels = c("8y", "6y", "4y", "2y"),
+      labels = c(
+        "8y",
+        "6y",
+        "4y",
+        "2y"
+      )
+    ),
+    
+    # Order and labels of panels
+    process = factor(
+      process,
+      levels = selected_processes,
+      labels = c(
+        "NPP",
+        "Evapotranspiration",
+        "Total carbon",
+        "Surviving strategies"
+      )
+    )
+  )
+
+
+###############################################################
+# Colorblind-friendly colors for drought recurrence intervals
+
+scenario_colors <- c(
+  "8y" = "#0072B2",
+  "6y" = "#009E73",
+  "4y" = "#E69F00",
+  "2y" = "#D55E00"
+)
+
+###############################################################
+# Plot annual anomaly trajectories
+
+annual_anomaly_plot <- ggplot(
+  annual_anomaly_plot_data,
+  aes(
+    x = year,
+    y = relative_anomaly,
+    color = scenario,
+    group = scenario
+  )
+) +
+  
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.5,
+    color = "grey60"
+  ) +
+  
+  geom_line(
+    linewidth = 0.9,
+    na.rm = TRUE
+  ) +
+  
+  facet_wrap(
+    ~ process,
+    ncol = 2
+  ) +
+  
+  scale_color_manual(
+    name = "Drought recurrence",
+    values = scenario_colors
+  ) +
+  
+  scale_x_continuous(
+    breaks = seq(1980, 2015, by = 5)
+  ) +
+  
+  labs(
+    x = "Year",
+    y = "Relative anomaly"
+  ) +
+  
+  theme_bw(base_size = 12) +
+  
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 12),
+    
+    strip.background = element_blank(),
+    strip.text = element_text(
+      face = "bold",
+      size = 12
+    ),
+    
+    axis.title = element_text(face = "bold"),
+    axis.title.y = element_text(
+      margin = margin(r = 10)
+    ),
+    axis.title.x = element_text(
+      margin = margin(t = 10)
+    ),
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    ),
+    
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(
+      color = "grey92"
+    ),
+    panel.border = element_rect(
+      color = "grey40",
+      fill = NA,
+      linewidth = 0.8
+    )
+  ) +
+  
+  guides(
+    color = guide_legend(
+      override.aes = list(
+        linewidth = 1.4
+      )
+    )
+  )
+
+annual_anomaly_plot
+
+###############################################################
+# Save figure in publication quality
+
+output_path <- paste0(
+  "~/Desktop/CAETE-DVM-alloc-allom/scripts/",
+  "recovery_rate_analysis/figures"
+)
+
+dir.create(
+  output_path,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+
+# # Vector format: preferred for line plots
+# 
+# ggsave(
+#   filename = file.path(
+#     output_path,
+#     "annual_anomaly_trajectories.pdf"
+#   ),
+#   plot = annual_anomaly_plot,
+#   device = cairo_pdf,
+#   width = 180,
+#   height = 145,
+#   units = "mm",
+#   bg = "white"
+# )
+# 
+# 
+# # High-resolution raster format
+# 
+# ggsave(
+#   filename = file.path(
+#     output_path,
+#     "annual_anomaly_trajectories.tiff"
+#   ),
+#   plot = annual_anomaly_plot,
+#   device = "tiff",
+#   width = 180,
+#   height = 145,
+#   units = "mm",
+#   dpi = 600,
+#   compression = "lzw",
+#   bg = "white"
+# )
+
+###############################################################
+# Pre-event anomaly trajectories
+
+pre_event_plot_data <- all_processes_summary_table %>%
+  filter(
+    process %in% c(
+      "npp",
+      "evapm",
+      "ctotal",
+      "ls"
+    )
+  ) %>%
+  mutate(
+    scenario = factor(
+      scenario,
+      levels = c("8y", "6y", "4y", "2y"),
+      labels = c(
+        "8y",
+        "6y",
+        "4y",
+        "2y"
+      )
+    ),
+    
+    process = factor(
+      as.character(process),
+      levels = c(
+        "npp",
+        "evapm",
+        "ctotal",
+        "ls"
+      ),
+      labels = c(
+        "NPP",
+        "Evapotranspiration",
+        "Total carbon",
+        "Surviving strategies"
+      )
+    )
+  )
+
+
+
+###############################################################
+# Plot pre-event anomaly trajectories
+
+pre_event_anomaly_plot <- ggplot(
+  pre_event_plot_data,
+  aes(
+    x = event_year,
+    y = anomaly_pre,
+    color = scenario,
+    group = scenario
+  )
+) +
+  
+  # Control reference
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.5,
+    color = "grey60"
+  ) +
+  
+  # Connect successive drought events
+  geom_line(
+    linewidth = 0.9,
+    na.rm = TRUE
+  ) +
+  
+  # Show the condition immediately before each event
+  geom_point(
+    size = 1.2,
+    na.rm = TRUE
+  ) +
+  
+  facet_wrap(
+    ~ process,
+    ncol = 2
+  ) +
+  
+  scale_color_manual(
+    name = "Drought recurrence",
+    values = scenario_colors
+  ) +
+  
+  scale_x_continuous(
+    breaks = seq(1980, 2015, by = 5)
+  ) +
+  
+  labs(
+    x = "Drought-event year",
+    y = "Pre-event relative anomaly"
+  ) +
+  
+  theme_bw(base_size = 12) +
+  
+  theme(
+    legend.position = "bottom",
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 12),
+    
+    strip.background = element_blank(),
+    strip.text = element_text(
+      face = "bold",
+      size = 12
+    ),
+    
+    axis.title = element_text(face = "bold"),
+    axis.title.y = element_text(
+      margin = margin(r = 10)
+    ),
+    axis.title.x = element_text(
+      margin = margin(t = 10)
+    ),
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1
+    ),
+    
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_line(
+      color = "grey92"
+    ),
+    panel.border = element_rect(
+      color = "grey40",
+      fill = NA,
+      linewidth = 0.8
+    )
+  ) +
+  
+  guides(
+    color = guide_legend(
+      override.aes = list(
+        linewidth = 1.4,
+        size = 2.5
+      )
+    )
+  )
+
+pre_event_anomaly_plot
+
+# ggsave(
+#   filename = file.path(
+#     output_path,
+#     "pre_event_anomaly_trajectories.pdf"
+#   ),
+#   plot = pre_event_anomaly_plot,
+#   device = cairo_pdf,
+#   width = 180,
+#   height = 145,
+#   units = "mm",
+#   bg = "white"
+# )
+# 
+# ggsave(
+#   filename = file.path(
+#     output_path,
+#     "pre_event_anomaly_trajectories.tiff"
+#   ),
+#   plot = pre_event_anomaly_plot,
+#   device = "tiff",
+#   width = 180,
+#   height = 145,
+#   units = "mm",
+#   dpi = 600,
+#   compression = "lzw",
+#   bg = "white"
+# )
+
+###############################################################
+# Heatmap of integrated negative deficit: 1980–2016
+###############################################################
+
+# Variables included in the analysis
+selected_processes <- c(
+  "npp",
+  "evapm",
+  "ctotal",
+  "ls"
+)
+
+# Common analysis period
+analysis_start_year <- 1980
+analysis_end_year   <- 2016
+
+expected_number_of_years <-
+  analysis_end_year - analysis_start_year + 1
+
+
+###############################################################
+# Calculate the integrated negative deficit
+#
+# D_v,f = -sum[min(Anomaly_v,f,t, 0)]
+#
+# Positive anomalies are assigned zero and therefore do not
+# compensate for years in which the variable was below control.
+
+integrated_deficit_data <- analysis_data %>%
+  filter(
+    process %in% selected_processes,
+    year >= analysis_start_year,
+    year <= analysis_end_year
+  ) %>%
+  mutate(
+    scenario = as.character(scenario)
+  ) %>%
+  group_by(
+    process,
+    scenario
+  ) %>%
+  summarise(
+    # Number of years containing valid anomaly values
+    number_of_years_observed =
+      n_distinct(year[!is.na(relative_anomaly)]),
+    
+    # Identify missing anomaly values
+    has_missing_values =
+      any(is.na(relative_anomaly)),
+    
+    # Integrated negative deficit
+    raw_integrated_deficit =
+      -sum(
+        pmin(relative_anomaly, 0),
+        na.rm = TRUE
+      ),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    # Only retain the metric when all 37 years are available
+    integrated_negative_deficit = if_else(
+      number_of_years_observed ==
+        expected_number_of_years &
+        !has_missing_values,
+      
+      raw_integrated_deficit,
+      NA_real_
+    )
+  )
+
+
+###############################################################
+# Prepare data for the heatmap
+
+integrated_deficit_heatmap_data <-
+  integrated_deficit_data %>%
+  mutate(
+    # Order of drought-recurrence intervals
+    scenario = factor(
+      scenario,
+      levels = c("8y", "6y", "4y", "2y")
+    ),
+    
+    # Reverse factor order so NPP appears at the top
+    process = factor(
+      as.character(process),
+      levels = c(
+        "ls",
+        "ctotal",
+        "evapm",
+        "npp"
+      ),
+      labels = c(
+        "Surviving strategies",
+        "Total carbon",
+        "Evapotranspiration",
+        "NPP"
+      )
+    ),
+    
+    # Values displayed inside cells
+    deficit_label = case_when(
+      as.character(scenario) == "2y" &
+        number_of_years_observed <
+        expected_number_of_years ~
+        "Collapsed",
+      
+      is.na(integrated_negative_deficit) ~
+        "NA",
+      
+      TRUE ~
+        sprintf(
+          "%.3f",
+          integrated_negative_deficit
+        )
+    )
+  )
+
+
+###############################################################
+# Define text colors according to cell background
+
+maximum_integrated_deficit <- max(
+  integrated_deficit_heatmap_data$
+    integrated_negative_deficit,
+  na.rm = TRUE
+)
+
+integrated_deficit_heatmap_data <-
+  integrated_deficit_heatmap_data %>%
+  mutate(
+    # With direction = 1, smaller values have dark colors
+    # and larger values have light colors
+    label_color = case_when(
+      is.na(integrated_negative_deficit) ~
+        "grey30",
+      
+      integrated_negative_deficit <=
+        0.45 * maximum_integrated_deficit ~
+        "white",
+      
+      TRUE ~
+        "black"
+    )
+  )
+
+
+###############################################################
+# Create the heatmap
+
+integrated_deficit_heatmap <- ggplot(
+  integrated_deficit_heatmap_data,
+  aes(
+    x = scenario,
+    y = process,
+    fill = integrated_negative_deficit
+  )
+) +
+  
+  geom_tile(
+    color = "white",
+    linewidth = 1
+  ) +
+  
+  geom_text(
+    aes(
+      label = deficit_label,
+      color = label_color
+    ),
+    size = 4.2,
+    fontface = "bold",
+    show.legend = FALSE
+  ) +
+  
+  # Common color scale across all variables
+  # Larger deficits are represented by lighter colors
+  scale_fill_viridis_c(
+    name = paste0(
+      "Integrated negative deficit"
+    ),
+    option = "C",
+    direction = 1,
+    na.value = "grey85"
+  ) +
+  
+  scale_color_identity() +
+  
+  # Keep cells square
+  coord_equal() +
+  
+  labs(
+    x = "Drought recurrence interval",
+    y = NULL
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  
+  theme(
+    axis.title.x = element_text(
+      face = "bold",
+      margin = margin(t = 10)
+    ),
+    
+    axis.text.x = element_text(
+      face = "bold",
+      size = 12
+    ),
+    
+    axis.text.y = element_text(
+      face = "bold",
+      size = 12
+    ),
+    
+    panel.grid = element_blank(),
+    
+    legend.title = element_text(
+      face = "bold"
+    ),
+    
+    legend.text = element_text(
+      size = 11
+    ),
+    
+    legend.position = "right"
+  )
+
+
+# Display the heatmap
+integrated_deficit_heatmap
+
+
+###############################################################
+# Check temporal coverage before interpreting the heatmap
+
+integrated_deficit_data %>%
+  select(
+    process,
+    scenario,
+    number_of_years_observed,
+    has_missing_values,
+    integrated_negative_deficit
+  ) %>%
+  arrange(
+    process,
+    scenario
+  ) %>%
+  print(
+    n = Inf
+  )
+
+
+# Vector PDF
+
+# ggsave(
+#   filename = file.path(
+#     output_path,
+#     "integrated_negative_deficit_heatmap.pdf"
+#   ),
+#   plot = integrated_deficit_heatmap,
+#   device = cairo_pdf,
+#   width = 180,
+#   height = 125,
+#   units = "mm",
+#   bg = "white"
+# )
+# 
+# 
+# # TIFF at 600 dpi
+# 
+# ggsave(
+#   filename = file.path(
+#     output_path,
+#     "integrated_negative_deficit_heatmap.tiff"
+#   ),
+#   plot = integrated_deficit_heatmap,
+#   device = "tiff",
+#   width = 180,
+#   height = 125,
+#   units = "mm",
+#   dpi = 600,
+#   compression = "lzw",
+#   bg = "white"
+# )
+
+# ==============================================================================
+# Event-specific magnitude of ecosystem responses to recurrent drought
+# ==============================================================================
+# ------------------------------------------------------------------------------
+# Prepare the event-level data
+# ------------------------------------------------------------------------------
+
+incremental_loss_plot_data <- all_processes_summary_table %>%
+  mutate(
+    process_key = tolower(as.character(process)),
+    
+    process_label = case_when(
+      process_key == "npp" ~ "NPP",
+      
+      process_key %in% c(
+        "evapm",
+        "evapotranspiration",
+        "et"
+      ) ~ "Evapotranspiration",
+      
+      process_key %in% c(
+        "ctotal",
+        "total_carbon",
+        "total carbon"
+      ) ~ "Total carbon",
+      
+      process_key %in% c(
+        "ls",
+        "surviving_strategies",
+        "number_of_surviving_strategies",
+        "surviving strategies"
+      ) ~ "Surviving strategies",
+      
+      TRUE ~ NA_character_
+    ),
+    
+    scenario = factor(
+      as.character(scenario),
+      levels = c("8y", "6y", "4y", "2y")
+    ),
+    
+    window_status = if_else(
+      response_window_complete,
+      "Complete window",
+      "Incomplete window"
+    ),
+    
+    window_status = factor(
+      window_status,
+      levels = c(
+        "Complete window",
+        "Incomplete window"
+      )
+    ),
+    
+    process_label = factor(
+      process_label,
+      levels = c(
+        "NPP",
+        "Evapotranspiration",
+        "Total carbon",
+        "Surviving strategies"
+      )
+    )
+  ) %>%
+  filter(
+    !is.na(event_specific_incremental_loss),
+    !is.na(process_label),
+    !is.na(scenario)
+  )
+
+# ------------------------------------------------------------------------------
+# Create the event-specific incremental-loss figure
+# ------------------------------------------------------------------------------
+
+incremental_loss_plot <- ggplot(
+  incremental_loss_plot_data,
+  aes(
+    x = event_year,
+    y = event_specific_incremental_loss,
+    color = scenario,
+    group = scenario
+  )
+) +
+  
+  # Connect successive drought events within each scenario
+  geom_line(
+    linewidth = 0.9,
+    na.rm = TRUE
+  ) +
+  
+  # Zero means that the event did not intensify
+  # the pre-event deficit
+  geom_hline(
+    yintercept = 0,
+    linewidth = 0.5,
+    linetype = "dashed",
+    color = "grey60"
+  ) +
+  
+  # One panel for each ecosystem process
+  facet_wrap(
+    facets = vars(process_label),
+    ncol = 2,
+    scales = "fixed"
+  ) +
+  
+  # Same colors used in the previous figures
+  scale_color_manual(
+    name = "Drought recurrence",
+    values = scenario_colors,
+    breaks = c("8y", "6y", "4y", "2y"),
+    labels = c("8y", "6y", "4y", "2y"),
+    drop = FALSE
+  ) +
+  
+  scale_x_continuous(
+    breaks = seq(1980, 2015, by = 5),
+    limits = c(1979, 2017),
+    expand = expansion(
+      mult = c(0.01, 0.01)
+    )
+  ) +
+  
+  scale_y_continuous(
+    expand = expansion(
+      mult = c(0.05, 0.10)
+    )
+  ) +
+  
+  labs(
+    x = "Drought-event year",
+    y = "Event-specific incremental loss"
+  ) +
+  
+  theme_classic(base_size = 11) +
+  
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1
+    ),
+    axis.title = element_text(face = "bold"),
+    
+    strip.background = element_rect(
+      fill = "grey94",
+      color = "grey70",
+      linewidth = 0.4
+    ),
+    
+    strip.text = element_text(
+      face = "bold",
+      size = 10
+    ),
+    
+    panel.spacing = grid::unit(
+      0.8,
+      "lines"
+    ),
+    
+    legend.position = "bottom",
+    legend.box = "vertical",
+    legend.title = element_text(face = "bold"),
+    legend.text = element_text(size = 12),
+  ) +
+  
+  guides(
+    color = guide_legend(
+      override.aes = list(
+        linewidth = 1.4
+      )
+    )
+  )
+
+
+# Display the figure
+incremental_loss_plot
+
+ggsave(
+  filename = file.path(
+    output_path,
+    "event_specific_incremental_loss.tiff"
+  ),
+  plot = incremental_loss_plot,
+  device = "tiff",
+  width = 180,
+  height = 145,
+  units = "mm",
+  dpi = 600,
+  compression = "lzw",
+  bg = "white"
+)
+
+# ==============================================================================
+# Time to maximum event-specific deficit
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Define process order, labels, colors, and shapes
+# ------------------------------------------------------------------------------
+
+process_levels <- c(
+  "npp",
+  "evapm",
+  "ctotal",
+  "ls"
+)
+
+process_labels <- c(
+  "NPP",
+  "Evapotranspiration",
+  "Total carbon",
+  "Surviving strategies"
+)
+
+# Colorblind-friendly palette
+process_colors <- c(
+  "NPP" = "#0072B2",                   # Blue
+  "Evapotranspiration" = "#009E73",    # Bluish green
+  "Total carbon" = "#E69F00",          # Orange
+  "Surviving strategies" = "#D55E00"  # Vermillion
+)
+
+# Shapes provide an additional distinction between processes
+process_shapes <- c(
+  "NPP" = 16,
+  "Evapotranspiration" = 17,
+  "Total carbon" = 15,
+  "Surviving strategies" = 18
+)
+
+
+# ------------------------------------------------------------------------------
+# Prepare event-level data
+# ------------------------------------------------------------------------------
+
+time_to_maximum_deficit_plot_data <-
+  all_processes_summary_table %>%
+  filter(
+    process %in% process_levels,
+    
+    # The definitive minimum cannot be identified when the
+    # response window is incomplete.
+    response_window_complete,
+    
+    # Time is undefined when the event produced no incremental
+    # loss relative to the pre-event condition.
+    !is.na(time_to_maximum_deficit)
+  ) %>%
+  mutate(
+    # Preserve the drought-recurrence order
+    scenario = factor(
+      as.character(scenario),
+      levels = c(
+        "8y",
+        "6y",
+        "4y",
+        "2y"
+      )
+    ),
+    
+    # Include the possible time range in each panel label
+    scenario_label = factor(
+      as.character(scenario),
+      levels = c(
+        "8y",
+        "6y",
+        "4y",
+        "2y"
+      ),
+      labels = c(
+        "8-year interval (0–7 years)",
+        "6-year interval (0–5 years)",
+        "4-year interval (0–3 years)",
+        "2-year interval (0–1 year)"
+      )
+    ),
+    
+    # Define process labels and their order
+    process_label = factor(
+      as.character(process),
+      levels = process_levels,
+      labels = process_labels
+    )
+  )
+
+# ------------------------------------------------------------------------------
+# Prepare drought-event years for the vertical reference lines
+# ------------------------------------------------------------------------------
+
+drought_event_lines <- all_processes_summary_table %>%
+  filter(
+    process %in% process_levels,
+    !is.na(event_year)
+  ) %>%
+  mutate(
+    # Assign each drought event to its corresponding facet
+    scenario_label = factor(
+      as.character(scenario),
+      levels = c(
+        "8y",
+        "6y",
+        "4y",
+        "2y"
+      ),
+      labels = c(
+        "8-year interval (0–7 years)",
+        "6-year interval (0–5 years)",
+        "4-year interval (0–3 years)",
+        "2-year interval (0–1 year)"
+      )
+    )
+  ) %>%
+  distinct(
+    scenario_label,
+    event_year
+  )
+
+# ------------------------------------------------------------------------------
+# Define the possible vertical range for each recurrence interval
+#
+# These values ensure that each panel displays the complete range
+# allowed by its response-window duration, even when the observed
+# values do not reach the theoretical maximum.
+# ------------------------------------------------------------------------------
+
+time_axis_limits <- tibble::tibble(
+  scenario_label = factor(
+    c(
+      "8-year interval (0–7 years)",
+      "6-year interval (0–5 years)",
+      "4-year interval (0–3 years)",
+      "2-year interval (0–1 year)"
+    ),
+    levels = c(
+      "8-year interval (0–7 years)",
+      "6-year interval (0–5 years)",
+      "4-year interval (0–3 years)",
+      "2-year interval (0–1 year)"
+    )
+  ),
+  
+  event_year = analysis_start_year,
+  
+  minimum_time = 0,
+  
+  maximum_time = c(
+    7,
+    5,
+    3,
+    1
+  )
+)
+
+
+# ------------------------------------------------------------------------------
+# Create the point figure
+# ------------------------------------------------------------------------------
+
+time_to_maximum_deficit_plot <- ggplot(
+  time_to_maximum_deficit_plot_data,
+  aes(
+    x = event_year,
+    y = time_to_maximum_deficit,
+    color = process_label,
+    shape = process_label
+  )
+) +
+  
+  # Force each panel to show the complete range allowed by its
+  # corresponding response-window duration.
+  geom_blank(
+    data = time_axis_limits,
+    aes(
+      x = event_year,
+      y = minimum_time
+    ),
+    inherit.aes = FALSE
+  ) +
+  
+  geom_blank(
+    data = time_axis_limits,
+    aes(
+      x = event_year,
+      y = maximum_time
+    ),
+    inherit.aes = FALSE
+  ) +
+  # Mark the calendar year of each imposed drought event
+  geom_vline(
+    data = drought_event_lines,
+    aes(
+      xintercept = event_year
+    ),
+    inherit.aes = FALSE,
+    color = "grey82",
+    linetype = "dashed",
+    linewidth = 0.35
+  ) +
+  
+  # Mark time zero relative to the drought event
+  geom_hline(
+    yintercept = 0,
+    color = "grey45",
+    linetype = "solid",
+    linewidth = 0.45
+  ) +
+  
+  # Slightly separate processes observed during the same event
+  geom_point(
+    position = position_dodge(
+      width = 0.9
+    ),
+    size = 2.8,
+    stroke = 0.8
+  ) +
+  
+  
+  # Slightly separate processes that share the same event year
+  geom_point(
+    position = position_dodge(
+      width = 0.9
+    ),
+    size = 2.8,
+    stroke = 0.8
+  ) +
+  
+  # Each panel represents one drought-recurrence interval.
+  # Free vertical scales are necessary because the maximum possible
+  # time differs among recurrence intervals.
+  facet_wrap(
+    facets = vars(scenario_label),
+    ncol = 2,
+    scales = "free_y"
+  ) +
+  
+  scale_color_manual(
+    name = "Ecosystem indicator",
+    values = process_colors,
+    breaks = process_labels,
+    drop = FALSE
+  ) +
+  
+  scale_shape_manual(
+    name = "Ecosystem indicator",
+    values = process_shapes,
+    breaks = process_labels,
+    drop = FALSE
+  ) +
+  
+  scale_x_continuous(
+    breaks = seq(
+      1980,
+      2015,
+      by = 5
+    ),
+    limits = c(
+      1979,
+      2017
+    ),
+    expand = expansion(
+      mult = c(
+        0.01,
+        0.01
+      )
+    )
+  ) +
+  
+  # Only integer values are meaningful because the analysis uses
+  # annual data.
+  scale_y_continuous(
+    breaks = 0:7,
+    expand = expansion(
+      add = c(
+        0.15,
+        0.25
+      )
+    )
+  ) +
+  
+  labs(
+    x = "Drought-event year",
+    y = "Time to maximum deficit (years)"
+  ) +
+  
+  theme_classic(
+    base_size = 11
+  ) +
+  
+  theme(
+    axis.text.x = element_text(
+      angle = 45,
+      hjust = 1,
+      vjust = 1
+    ),
+    
+    # Horizontal grid lines facilitate comparison of discrete times
+    panel.grid.major.y = element_line(
+      color = "grey90",
+      linewidth = 0.35
+    ),
+    
+    panel.grid.minor = element_blank(),
+    
+    strip.background = element_rect(
+      fill = "grey94",
+      color = "grey70",
+      linewidth = 0.4
+    ),
+    
+    strip.text = element_text(
+      face = "bold",
+      size = 10
+    ),
+    
+    panel.spacing = grid::unit(
+      0.9,
+      "lines"
+    ),
+    
+    legend.position = "bottom",
+    legend.box = "vertical"
+  ) +
+  
+  guides(
+    color = guide_legend(
+      nrow = 1,
+      byrow = TRUE,
+      override.aes = list(
+        size = 3
+      )
+    ),
+    
+    shape = guide_legend(
+      nrow = 1,
+      byrow = TRUE
+    )
+  )
+
+
+# Display the figure
+time_to_maximum_deficit_plot
 
