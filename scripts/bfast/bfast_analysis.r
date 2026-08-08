@@ -22,7 +22,8 @@ columns_to_process <- c("npp", "ctotal","evapm","wue")
 # # !!!!! note this is the monthly integrated data frame!!!!!!!
 
 # df_regclim <- read.csv("/home/amazonfaceme/biancarius/CAETE-DVM-alloc-allom/outputs/MAN/experiments/MAN_regularclimate/gridcell186-239/MAN_regularclimate_monthly.csv")
-df_regclim <- read.csv("/home/bianca/bianca/CAETE-DVM-alloc-allom/scripts/monthly_mean_tables/MAN_regularclimate_monthly.csv")
+#df_regclim <- read.csv("/home/bianca/bianca/CAETE-DVM-alloc-allom/scripts/monthly_mean_tables/MAN_regularclimate_monthly.csv")
+df_regclim <- read.csv("/Users/biancarius/Desktop/CAETE-DVM-alloc-allom-including_alloc2_Cm2/scripts/monthly_mean_tables/MAN_regularclimate_monthly.csv")
 
 # Criando objetos de série temporal para todas as colunas
 time_series_list_regclim <- lapply(df_regclim[, -1], function(col) {
@@ -34,9 +35,22 @@ names(time_series_list_regclim) <- names(df_regclim[, -1])
 
 bfast_res_list_regclim <- list()
 
-res_bfast_regclim <- bfast(time_series_list_regclim$npp,
+res_bfast_regclim_npp <- bfast(time_series_list_regclim$npp,
                            h = 0.25, max.iter = 1)
-plot(res_bfast_regclim, type = "trend", ylab = "Trend")
+#plot(res_bfast_regclim, type = "trend", ylab = "Trend")
+plot(res_bfast_regclim_npp, type = "trend")
+
+res_bfast_regclim_evapm <- bfast(time_series_list_regclim$evapm,
+                               h = 0.25, max.iter = 1)
+#plot(res_bfast_regclim, type = "trend", ylab = "Trend")
+plot(res_bfast_regclim_evapm, type = "trend")
+
+
+str(res_bfast_regclim_evapm, max.level = 3)
+res_bfast_regclim_evapm$output
+res_bfast_regclim_evapm$output[[1]]$ci
+res_bfast_regclim_evapm$output[[1]]$confint
+confint(res_bfast_regclim_evapm)
 
 # # Executar bfast e plotar resultados
 # 
@@ -125,7 +139,7 @@ for (col_name in columns_to_process) {
 # 
 # # Manaus - 30% prec reduction - 1 year frequency application
 # # !!!!! note this is the monthly integrated data frame!!!!!!!
-df_1y <- read.csv("/home/bianca/bianca/CAETE-DVM-alloc-allom/scripts/monthly_mean_tables/MAN_30prec_1y_monthly.csv")
+df_1y <- read.csv("/Users/biancarius/Desktop/CAETE-DVM-alloc-allom-including_alloc2_Cm2/scripts/monthly_mean_tables/MAN_30prec_1y_monthly.csv")
 
 # Criando objetos de série temporal para todas as colunas
 time_series_list_1y <- lapply(df_1y[, -1], function(col) {
@@ -136,6 +150,16 @@ time_series_list_1y <- lapply(df_1y[, -1], function(col) {
 names(time_series_list_1y) <- names(df_1y[, -1])
 
 bfast_res_list_1y <- list()
+
+res_bfast_1y_npp <- bfast(time_series_list_1y$npp,
+                               h = 0.25, max.iter = 1)
+#plot(res_bfast_regclim, type = "trend", ylab = "Trend")
+plot(res_bfast_1y_npp, type = "trend")
+
+res_bfast_1y_evapm <- bfast(time_series_list_1y$evapm,
+                                 h = 0.25, max.iter = 1)
+#plot(res_bfast_regclim, type = "trend", ylab = "Trend")
+plot(res_bfast_1y_evapm, type = "trend")
 
 # Executar bfast 
 # Executar bfast e plotar resultados

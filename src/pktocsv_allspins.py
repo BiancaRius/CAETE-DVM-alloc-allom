@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 
 def read_pkz(spin, run_name, grd_name, grd_acro):
-    with open(f"/home/amazonfaceme/biancarius/CAETE-DVM-alloc-allom/outputs/{run_name}/{grd_name}/spin{spin:02d}.pkz", 'rb') as fh:
+    with open(f"/home/amazonfaceme/biancarius/CAETE-DVM-alloc2-allom2/outputs/{run_name}/{grd_name}/spin{spin:02d}.pkz", 'rb') as fh:
         dt = joblib.load(fh)
     # print(f"Loaded data for spin {spin:02d}")
     return dt
@@ -13,7 +13,7 @@ def pkz2csv(file, path, grd_name, run_name, spin_id, date_range, grd_acro) -> pd
     assert date_range[2] == f"{spin_id:02d}", f"ID do spin {spin_id} não corresponde ao ID no date_range: {date_range[2]}"
 
 
-    CT1 = pd.read_csv("/home/amazonfaceme/biancarius/CAETE-DVM-alloc-allom/src/code_table_allom.csv")
+    CT1 = pd.read_csv("/home/amazonfaceme/biancarius/CAETE-DVM-alloc2-allom2/src/code_table_allom.csv")
 
     MICV = ['year', 'pid', 'ocp']
 
@@ -29,7 +29,7 @@ def pkz2csv(file, path, grd_name, run_name, spin_id, date_range, grd_acro) -> pd
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
 
-    folder_path2 = f"/home/amazonfaceme/biancarius/CAETE-DVM-alloc-allom/outputs/{run_name}/{grd_name}/csv"
+    folder_path2 = f"/home/amazonfaceme/biancarius/CAETE-DVM-alloc2-allom2/outputs/{run_name}/{grd_name}/csv"
     if not os.path.exists(folder_path2):
         os.makedirs(folder_path2)
 
@@ -50,8 +50,10 @@ def pkz2csv(file, path, grd_name, run_name, spin_id, date_range, grd_acro) -> pd
         print('')
         # print(f'len area_TS {len(area_TS)} len idxT1 {len(idxT1)}')
 
+       
     # Verifique se o comprimento de area_TS é consistente com o índice idxT1
         assert len(area_TS) == len(idxT1), "Length mismatch between area_TS and idxT1"
+        
     
         area_TS = pd.Series(area_TS, index=idxT1)
 
@@ -86,7 +88,7 @@ def pkz2csv(file, path, grd_name, run_name, spin_id, date_range, grd_acro) -> pd
 
         # Save the CSV file with spin information in the name
         csv_filename = f"{run_name}_{grd_name}_spin{spin_id:02d}_EV_{int(lev)}.csv"
-        dt1.to_csv(f"/home/amazonfaceme/biancarius/CAETE-DVM-alloc-allom/outputs/{run_name}/{grd_name}/csv/{csv_filename}", index=False)
+        dt1.to_csv(f"/home/amazonfaceme/biancarius/CAETE-DVM-alloc2-allom2/outputs/{run_name}/{grd_name}/csv/{csv_filename}", index=False)
 
 # # # User inputs
 # run_name = input('Run name: ')

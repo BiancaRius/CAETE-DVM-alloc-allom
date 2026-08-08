@@ -51,7 +51,7 @@ runplotp = False
 
 while True:
     maskp = input(
-        "TWO MASK OPTIONS: AMAZON BIOME (a); PAN-AMAZON (b) OR PLOT RUN (c): ")
+        "THREE MASK OPTIONS: AMAZON BIOME (a); PAN-AMAZON (b) OR PLOT RUN (c): ")
     if maskp == 'b':
         mask = np.load("../input/mask/mask_raisg-360-720.npy")
         break
@@ -1105,7 +1105,7 @@ class grd:
    
         # Catch climatic input and make conversions
         temp = self.tas[lb: hb + 1] - 273.15  # ! K to °C
-        prec = self.pr[lb: hb + 1] * 86400  # kg m-2 s-1 to  mm/day
+        prec = self.pr[lb: hb + 1] * 86400 # kg m-2 s-1 to  mm/day
         # transforamando de Pascal pra mbar (hPa)
         p_atm = self.ps[lb: hb + 1] * 0.01
         # W m-2 to mol m-2 s-1 ! 0.5 converts RSDS to PAR

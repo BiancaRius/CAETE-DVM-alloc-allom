@@ -1,11 +1,12 @@
 import pktocsv_allspins as p 
 import time_series as t
-import os
+import os 
 import joblib
 import pandas as pd
 import numpy as np
 
-
+#Choose the gridcell acronym to access the data
+#this step is to facilitate accessing the folder where the results were saved
 while True:
     grd_acro = input('Gridcell acronym [AFL, ALP, FEC, MAN, CAX, NVX]: ')
 
@@ -37,7 +38,7 @@ while True:
 
     if server == 'y':
         # Set the main_path accordingly for server
-        main_path = f'/home/amazonfaceme/biancarius/CAETE-DVM-alloc-allom/outputs/'
+        main_path = f'/home/amazonfaceme/biancarius/CAETE-DVM-alloc2-allom2/outputs/'
         break
     elif server == 'n':
         # Set the main_path accordingly for local machine
@@ -73,7 +74,7 @@ while True:
 #     'CAX_30prec_7y']
 
 run_names = [
-   'MAN_30prec_7y']
+   'sombrero']
     
 
 
